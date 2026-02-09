@@ -1,0 +1,66 @@
+{
+	"name": "plantr",
+	"version": "1.0.1",
+	"description": "A generic seeder library with built-in faker, step, and expect support for type-safe database seeding",
+	"type": "module",
+	"module": "./dist/index.js",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/HansKristoffer/plantr.git"
+	},
+	"author": "Kristoffer Hansen",
+	"keywords": [
+		"bun",
+		"seeder",
+		"database",
+		"faker",
+		"testing",
+		"seed",
+		"prisma",
+		"typescript",
+		"dependency-injection"
+	],
+	"engines": {
+		"bun": ">=1.0.0"
+	},
+	"files": [
+		"*.ts",
+		"src/*.ts",
+		"dist",
+		"!*.test.ts",
+		"!src/*.test.ts"
+	],
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"bun": "./index.ts",
+			"import": "./dist/index.js",
+			"default": "./dist/index.js"
+		}
+	},
+	"scripts": {
+		"build": "bun run build:js && bun run build:types",
+		"build:js": "bun build ./index.ts --outdir ./dist --target node --packages external",
+		"build:types": "tsc -p tsconfig.build.json",
+		"test": "bun test",
+		"prepublishOnly": "bun run build",
+		"publish:patch": "npm version patch && npm publish",
+		"publish:minor": "npm version minor && npm publish",
+		"publish:major": "npm version major && npm publish",
+		"lint": "bun run typecheck && biome check",
+		"lint:write": "bun run typecheck && biome check --fix && biome format",
+		"typecheck": "tsgo --incremental"
+	},
+	"dependencies": {
+		"@faker-js/faker": "^9.0.0"
+	},
+	"devDependencies": {
+		"@types/bun": "1.3.2",
+		"@biomejs/biome": "2.3.4",
+		"@typescript/native-preview": "7.0.0-dev.20260127.1",
+		"typescript": "^5.7.0"
+	}
+}
