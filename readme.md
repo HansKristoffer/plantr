@@ -228,3 +228,7 @@ try {
 ## License
 
 MIT
+
+## Releasing
+
+Squash PRs with conventional titles (`fix:`, `feat:`, or `feat!:`). Release Please keeps the version and changelog in a release PR; merge that PR to publish with release notes and npm provenance. See [release and recovery instructions](docs/releasing.md).
