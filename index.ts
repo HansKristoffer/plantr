@@ -48,17 +48,20 @@ export { createSeederInstance } from './src/create-seeder-instance'
 export { createDefineSeeder } from './src/define-seeder'
 export {
 	CircularDependencyError,
+	DuplicateSeederError,
 	MissingDependencyError,
 	resolveDependencyOrder,
+	UnknownSeederError,
 } from './src/dependency-resolver'
 export { colorize, formatDuration } from './src/formatting'
-export { runSeedersCore } from './src/run-seeders'
+export { describeTarget, runSeedersCore, SeedTargetError } from './src/run-seeders'
 
-// Seeding state (for advanced use cases - prefer using isSeedingActive from the instance)
+// Seeding state. Runtime code (job queues, mailers) should import it from 'plantr/state',
+// which does not load faker or bun:test.
 export { isSeedingActive } from './src/seeding-state'
 
 // Step types and cache
-export type { SeederCache, StepFn, StepOptions } from './src/step'
+export type { SeederCache, StepFn, StepOptions, StepRecord } from './src/step'
 export { createStepRunner } from './src/step'
 
 // Types

@@ -82,6 +82,10 @@ export type SeederResult = {
 	durationMs?: number
 	output?: unknown
 	error?: Error
+	/** Description of the step that threw, when the seeder failed in a step */
+	failedStep?: string
+	/** Descriptions of the steps whose output came from the cache */
+	cachedSteps?: string[]
 }
 
 /** Options for the seeder runner */
@@ -96,4 +100,20 @@ export type RunSeedersOptions = {
 	 * but independent seeders will still run.
 	 */
 	continueOnFailure?: boolean
+	/**
+	 * Run only these seeders and everything they depend on, in dependency order.
+	 * Throws `UnknownSeederError` for a name that is not registered.
+	 */
+	only?: readonly string[]
+	/**
+	 * Ignore cached step entries and overwrite them: `true` for every seeder,
+	 * or the names of the seeders to run fresh. Dependencies of those seeders still
+	 * replay their cache unless they are named too.
+	 */
+	fresh?: boolean | readonly string[]
+	/**
+	 * Seed a target that is not local (see `target` on the instance config).
+	 * Without it, a non-local target throws `SeedTargetError` before anything runs.
+	 */
+	allowRemote?: boolean
 }

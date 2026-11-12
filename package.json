@@ -28,6 +28,7 @@
 	},
 	"files": [
 		"index.ts",
+		"state.ts",
 		"src/*.ts",
 		"dist",
 		"!src/*.test.ts"
@@ -38,11 +39,17 @@
 			"bun": "./index.ts",
 			"import": "./dist/index.js",
 			"default": "./dist/index.js"
+		},
+		"./state": {
+			"types": "./dist/state.d.ts",
+			"bun": "./state.ts",
+			"import": "./dist/state.js",
+			"default": "./dist/state.js"
 		}
 	},
 	"scripts": {
 		"build": "bun run build:js && bun run build:types",
-		"build:js": "bun build ./index.ts --outdir ./dist --target node --packages external",
+		"build:js": "bun build ./index.ts ./state.ts --outdir ./dist --target node --packages external",
 		"build:types": "tsc -p tsconfig.build.json",
 		"test": "bun test",
 		"prepublishOnly": "bun run build",
