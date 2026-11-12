@@ -1,6 +1,6 @@
 {
 	"name": "plantr",
-	"version": "1.0.1",
+	"version": "2.0.0",
 	"description": "A generic seeder library with built-in faker, step, and expect support for type-safe database seeding",
 	"type": "module",
 	"module": "./dist/index.js",
