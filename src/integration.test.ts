@@ -372,6 +372,17 @@ describe('integration', () => {
 			expect(describeTarget('postgresql://u@host.docker.internal/app').local).toBe(true)
 			expect(describeTarget('postgresql://u@postgres.railway.internal/app').local).toBe(false)
 			expect(describeTarget('not a url').local).toBe(false)
+			expect(describeTarget('postgresql://u@localhost/db?host=prod.example.com').local).toBe(false)
+			expect(describeTarget('postgresql://u:p@/db?host=/var/run/postgresql').local).toBe(true)
+			expect(describeTarget('sqlserver://localhost:1433;database=x;password=pw')).toEqual({
+				label: 'localhost:1433',
+				local: true,
+			})
+			expect(describeTarget('mongodb://u:p@localhost:27017,localhost:27018/db').local).toBe(true)
+			expect(describeTarget('mongodb://u:p@localhost:27017,db.example.com/db').local).toBe(false)
+			expect(describeTarget('jdbc:postgresql://prod.example.com/db').local).toBe(false)
+			expect(describeTarget('prod.example.com:5432/db').local).toBe(false)
+			expect(describeTarget('file:./dev.db').local).toBe(true)
 		})
 
 		it('should record the failed step and the cached steps before it', async () => {

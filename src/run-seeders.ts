@@ -40,29 +40,46 @@ export class SeedTargetError extends Error {
 	}
 }
 
-/**
- * Describe a database URL without its credentials and say whether its host is local:
- * loopback, `*.localhost`, `host.docker.internal`, a socket or file path, or a name
- * without a dot (a compose service).
- */
-export function describeTarget(target: string): { label: string; local: boolean } {
-	let url: URL
-	try {
-		url = new URL(target)
-	} catch {
-		return { label: 'a target that is not a URL', local: false }
-	}
-	const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '')
-	const local =
-		host === '' ||
+const isLocalHost = (hostPort: string): boolean => {
+	if (hostPort.startsWith('/')) return true // socket directory
+	const lower = hostPort.toLowerCase()
+	const bracketed = /^\[([^\]]*)\]/.exec(lower)
+	const host = bracketed ? (bracketed[1] ?? '') : lower.replace(/:\d+$/, '')
+	return (
 		host === '::1' ||
 		host === '0.0.0.0' ||
 		host === 'host.docker.internal' ||
 		host.endsWith('.localhost') ||
 		/^127\./.test(host) ||
 		!/[.:]/.test(host)
-	const label = url.host ? `${url.host}${url.pathname}` : `${url.protocol}${url.pathname}`
-	return { label, local }
+	)
+}
+
+/**
+ * Describe a database URL without its credentials and say whether every host it names
+ * is local: loopback, `*.localhost`, `host.docker.internal`, a socket or `file:` path,
+ * or a name without a dot (a compose service). A `host=` parameter overrides the
+ * URL's host, as libpq does. Hand-parsed so driver formats `URL` rejects still work
+ * (several hosts, `sqlserver://host;key=value`, sockets with credentials).
+ */
+export function describeTarget(target: string): { label: string; local: boolean } {
+	if (/^file:/i.test(target)) return { label: target.replace(/[?#].*$/, ''), local: true }
+	const scheme = /^[a-z][\w+.-]*:\/\//i.exec(target)
+	if (!scheme) return { label: 'a target that is not a URL', local: false }
+
+	const rest = target.slice(scheme[0].length)
+	const queryStart = rest.search(/[?#]/)
+	const beforeQuery = queryStart === -1 ? rest : rest.slice(0, queryStart)
+	const query = queryStart === -1 ? '' : rest.slice(queryStart)
+	// Drop credentials: everything up to the last @ before the query
+	const authorityAndPath = beforeQuery.slice(beforeQuery.lastIndexOf('@') + 1)
+	const [authority = '', path = ''] = authorityAndPath.split(/(?=[/;])/, 2)
+	let hosts = authority.split(',').filter(Boolean)
+	const hostParam = /[?&;]host=([^&;#]*)/i.exec(`${query}${path.startsWith(';') ? path : ''}`)?.[1]
+	if (hostParam) hosts = decodeURIComponent(hostParam).split(',').filter(Boolean)
+
+	const label = `${hosts.join(',') || 'local socket'}${path.startsWith('/') ? path : ''}`
+	return { label, local: hosts.every(isLocalHost) }
 }
 
 /**

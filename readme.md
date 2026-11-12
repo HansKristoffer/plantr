@@ -254,7 +254,7 @@ cache: {
 
 ## Target guard
 
-Set `target` to the database URL the instance writes to. The banner then shows its host and database, never credentials (`🌱 Running Seeders → localhost:5432/app`), and a run refuses with `SeedTargetError` before `onBeforeAll` when the host is not local. Local means loopback (`localhost`, `127.*`, `::1`), `*.localhost`, `host.docker.internal`, a socket or file path, or a name without a dot such as a compose service. Seed anything else on purpose with `allowRemote: true` or `--allow-remote`, for example in a staging pre-deploy command.
+Set `target` to the database URL the instance writes to. The banner then shows its host and database, never credentials (`🌱 Running Seeders → localhost:5432/app`), and a run refuses with `SeedTargetError` before `onBeforeAll` when the host is not local. Local means every host the URL names (several hosts, or a `host=` parameter, which overrides the URL's host) is loopback (`localhost`, `127.*`, `::1`), `*.localhost`, `host.docker.internal`, a socket directory or `file:` path, or a name without a dot such as a compose service. A target without a `scheme://` is refused. Seed anything else on purpose with `allowRemote: true` or `--allow-remote`, for example in a staging pre-deploy command.
 
 Without `target` there is no check. For other rules (an environment variable, a list of allowed hosts), throw from `onBeforeAll`.
 

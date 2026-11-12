@@ -101,7 +101,7 @@ export function createStepRunner(config?: StepRunnerConfig): {
 			let result: T
 			let wasCached = false
 
-			if (useCache) {
+			if (useCache && cache) {
 				if (usedKeys.has(cacheKey)) {
 					throw new Error(
 						`Step "${description}" uses cache key "${cacheKey}", which another cached step in this run already used. Give each cached step a unique description.`,
