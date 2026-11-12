@@ -110,22 +110,38 @@ export function printResultsTable(results: SeederResult[]): void {
 	console.log('')
 }
 
+const escapeAnnotation = (text: string) =>
+	text.replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A')
+
 /**
- * Print error details for failed seeders
+ * Print error details for failed seeders: the failing step, the full error (message,
+ * stack, cause and own fields via Bun.inspect) and a hint when cached steps ran first.
+ * Under GitHub Actions, also prints one `::error` annotation per failed seeder.
  */
 export function printErrors(results: SeederResult[]): void {
 	const failed = results.filter((r) => r.status === 'failed')
 
 	for (const result of failed) {
-		console.log(colorize(`❌ Seeder "${result.name}" failed:`, 'red'))
+		const where = result.failedStep ? ` in step "${result.failedStep}"` : ''
+		console.log(colorize(`❌ Seeder "${result.name}" failed${where}:`, 'red'))
 		if (result.error) {
-			console.log(`   ${colorize(result.error.message, 'dim')}`)
-			if (result.error.stack) {
-				const stackLines = result.error.stack.split('\n').slice(1, 4)
-				for (const line of stackLines) {
-					console.log(`   ${colorize(line.trim(), 'gray')}`)
-				}
-			}
+			const details = Bun.inspect(result.error, { colors: Boolean(process.stdout.isTTY) })
+			for (const line of details.split('\n')) console.log(`   ${line}`)
+		}
+		const cached = result.cachedSteps ?? []
+		if (cached.length > 0) {
+			console.log(
+				colorize(
+					`   ${cached.length} earlier step(s) came from the cache: ${cached.join(', ')}. If they are stale, run this seeder fresh (CLI: --only ${result.name} --fresh).`,
+					'yellow',
+				),
+			)
+		}
+		if (process.env.GITHUB_ACTIONS === 'true') {
+			const title = `Seeder ${result.name} failed${where}`.replace(/[:,]/g, ' ')
+			console.log(
+				`::error title=${escapeAnnotation(title)}::${escapeAnnotation(result.error?.message ?? 'failed')}`,
+			)
 		}
 		console.log('')
 	}
@@ -165,9 +181,11 @@ export function printSeederComplete(durationMs: number, success: boolean): void 
 /**
  * Print the initial banner when seeding starts
  */
-export function printStartBanner(label?: string): void {
-	const labelText = label ? ` ${colorize(`(${label})`, 'dim')}` : ''
-	console.log(`\n${colorize('🌱 Running Seeders', 'cyan', 'bold')}${labelText}\n`)
+export function printStartBanner(target?: { label: string; local: boolean }): void {
+	const targetText = target
+		? ` ${colorize(`→ ${target.label}`, 'dim')}${target.local ? '' : ` ${colorize('(remote, allowed)', 'yellow')}`}`
+		: ''
+	console.log(`\n${colorize('🌱 Running Seeders', 'cyan', 'bold')}${targetText}\n`)
 }
 
 /**

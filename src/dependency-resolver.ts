@@ -21,18 +21,45 @@ export class MissingDependencyError extends Error {
 }
 
 /**
+ * Error thrown when two seeders share a name
+ */
+export class DuplicateSeederError extends Error {
+	constructor(name: string) {
+		super(`Two seeders are named "${name}"; seeder names must be unique`)
+		this.name = 'DuplicateSeederError'
+	}
+}
+
+/**
+ * Error thrown when a seeder is selected by a name that is not registered
+ */
+export class UnknownSeederError extends Error {
+	constructor(name: string, known: readonly string[]) {
+		super(`Unknown seeder "${name}". Registered seeders: ${known.join(', ') || '(none)'}`)
+		this.name = 'UnknownSeederError'
+	}
+}
+
+/**
  * Resolves the execution order of seeders based on their dependencies
  * using Kahn's algorithm (topological sort)
  *
  * @param seeders - Array of seeders to sort
+ * @param only - Optional names to select: returns them and everything they depend on
  * @returns Array of seeder names in execution order
+ * @throws {DuplicateSeederError} If two seeders share a name
+ * @throws {UnknownSeederError} If a name in `only` is not registered
  * @throws {CircularDependencyError} If circular dependencies are detected
  * @throws {MissingDependencyError} If a seeder depends on a non-existent seeder
  */
-export function resolveDependencyOrder(seeders: readonly SeederAny[]): string[] {
+export function resolveDependencyOrder(
+	seeders: readonly SeederAny[],
+	only?: readonly string[],
+): string[] {
 	// Build a map of seeder names for quick lookup
 	const seederMap = new Map<string, SeederAny>()
 	for (const seeder of seeders) {
+		if (seederMap.has(seeder.name)) throw new DuplicateSeederError(seeder.name)
 		seederMap.set(seeder.name, seeder)
 	}
 
@@ -99,7 +126,20 @@ export function resolveDependencyOrder(seeders: readonly SeederAny[]): string[] 
 		throw new CircularDependencyError(cycle)
 	}
 
-	return result
+	if (!only) return result
+
+	// Keep the selected seeders and their transitive dependencies, in execution order
+	const selected = new Set<string>()
+	const visit = (name: string) => {
+		if (selected.has(name)) return
+		selected.add(name)
+		for (const dep of seederMap.get(name)?.dependsOn ?? []) visit(dep)
+	}
+	for (const name of only) {
+		if (!seederMap.has(name)) throw new UnknownSeederError(name, [...seederMap.keys()])
+		visit(name)
+	}
+	return result.filter((name) => selected.has(name))
 }
 
 /**

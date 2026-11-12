@@ -6,21 +6,26 @@
  * - Sending notifications (email, Slack, push)
  * - Creating background jobs
  * - Syncing to external services
+ *
+ * The flag lives on `globalThis`, so `plantr` and `plantr/state` share it even when
+ * they are loaded as separate bundles. It is one flag per process, shared by every
+ * seeder instance.
  */
 
-let isSeeding = false
+const key = Symbol.for('plantr.seedingActive')
+const state = globalThis as { [key]?: boolean }
 
 /**
  * Check if seeding is currently active
  */
 export function isSeedingActive(): boolean {
-	return isSeeding
+	return state[key] === true
 }
 
 /**
  * Set the seeding state.
- * Called automatically by the seeder runner's onBeforeAll/onAfterAll hooks.
+ * Called automatically by `runSeeders` around a run.
  */
 export function setSeedingActive(active: boolean): void {
-	isSeeding = active
+	state[key] = active
 }

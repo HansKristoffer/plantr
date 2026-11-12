@@ -1,8 +1,7 @@
 import { expect } from 'bun:test'
 import { faker } from '@faker-js/faker'
+import { runCli } from './cli'
 import { createDefineSeeder } from './define-seeder'
-import { resolveDependencyOrder } from './dependency-resolver'
-import { colorize } from './formatting'
 import { runSeedersCore } from './run-seeders'
 import { isSeedingActive, setSeedingActive } from './seeding-state'
 import { createStepRunner, type SeederCache } from './step'
@@ -47,7 +46,8 @@ export type SeederInstanceConfig<TContext extends BaseSeederContext> = {
 	 *     return cached?.output as T | undefined
 	 *   },
 	 *   set: async (key, value) => {
-	 *     await prisma.seedCache.create({ data: { key, output: value } })
+	 *     const output = value as Prisma.InputJsonValue
+	 *     await prisma.seedCache.upsert({ where: { key }, create: { key, output }, update: { output } })
 	 *   }
 	 * }
 	 * ```
@@ -55,8 +55,23 @@ export type SeederInstanceConfig<TContext extends BaseSeederContext> = {
 	cache?: SeederCache
 
 	/**
-	 * Called before all seeders run.
-	 * Use for setup like connecting to databases.
+	 * Optional: the database URL this instance writes to, e.g. `() => process.env.DATABASE_URL`.
+	 * The banner prints its host and database (never credentials), and a run refuses a
+	 * host that is not local unless it passes `allowRemote` (CLI: `--allow-remote`).
+	 * Return undefined to skip the check.
+	 */
+	target?: () => string | undefined
+
+	/**
+	 * Optional: seed faker before each seeder with this number plus a hash of the
+	 * seeder's name, so every run generates the same data and adding a seeder does
+	 * not shift the others'.
+	 */
+	fakerSeed?: number
+
+	/**
+	 * Called before all seeders run, before the context factory.
+	 * Use for setup like connecting to databases, or to refuse a run.
 	 *
 	 * @example
 	 * ```typescript
@@ -68,7 +83,8 @@ export type SeederInstanceConfig<TContext extends BaseSeederContext> = {
 	onBeforeAll?: () => void | Promise<void>
 
 	/**
-	 * Called after all seeders complete (success or failure).
+	 * Called after all seeders complete (success or failure), also when the context
+	 * factory throws.
 	 * Use for cleanup like disconnecting from databases.
 	 *
 	 * @example
@@ -115,7 +131,9 @@ export type SeederInstance<TContext extends BaseSeederContext> = {
 	 *
 	 * @param seeders - Array of seeders to run
 	 * @param options - Optional runner options
-	 * @returns Object containing results and success status
+	 * @returns Object containing results and success status; `success` is false when a seeder failed
+	 * @throws Before anything runs, on an invalid registry (duplicate name, missing
+	 * dependency, cycle), an unknown name in `only`/`fresh`, or a refused `target`
 	 */
 	runSeeders: (
 		seeders: readonly SeederAny[],
@@ -123,8 +141,10 @@ export type SeederInstance<TContext extends BaseSeederContext> = {
 	) => Promise<{ results: SeederResult[]; success: boolean }>
 
 	/**
-	 * Run seeders as a CLI command.
-	 * Handles help flag, prints banner, runs seeders, and exits with proper code.
+	 * Run seeders as a CLI command: parses the arguments, runs, and exits with 0 or 1.
+	 * Seeder names (positional or `--only a,b`) select seeders plus their dependencies;
+	 * `--fresh`, `--continue-on-failure`, `--allow-remote`, `--dry-run` and `--help` map
+	 * to the runner options. Unknown flags and names exit 1.
 	 *
 	 * @example
 	 * ```typescript
@@ -134,7 +154,14 @@ export type SeederInstance<TContext extends BaseSeederContext> = {
 	 * }
 	 * ```
 	 */
-	runSeedersCli: (seeders: readonly SeederAny[], options?: { name?: string }) => Promise<void>
+	runSeedersCli: (
+		seeders: readonly SeederAny[],
+		options?: {
+			name?: string
+			/** Arguments to parse (default: `process.argv.slice(2)`) */
+			argv?: readonly string[]
+		},
+	) => Promise<void>
 
 	/**
 	 * Check if seeding is currently active.
@@ -172,15 +199,7 @@ export type SeederInstance<TContext extends BaseSeederContext> = {
  *     ...base,
  *     prisma,
  *   }),
- *   cache: {
- *     get: async (key) => {
- *       const cached = await prisma.seedCache.findUnique({ where: { key } })
- *       return cached?.output
- *     },
- *     set: async (key, value) => {
- *       await prisma.seedCache.create({ data: { key, output: value } })
- *     }
- *   },
+ *   target: () => process.env.DATABASE_URL,
  * })
  *
  * export { defineSeeder, isSeedingActive }
@@ -204,106 +223,43 @@ export function createSeederInstance<TContext extends BaseSeederContext = BaseSe
 		seeders: readonly SeederAny[],
 		options?: RunSeedersOptions,
 	): Promise<{ results: SeederResult[]; success: boolean }> => {
-		// Create context once per run (not per seeder)
-		const { step, setSeederName } = createStepRunner({ cache: config.cache })
-		const baseContext: BaseSeederContext = {
-			faker,
-			step,
-			expect,
-		}
-		const ctx = await config.context(baseContext)
+		// One step runner per run, so cache keys and duplicate checks are per run
+		const { step, setSeederName } = createStepRunner({
+			cache: config.cache,
+			log: options?.verbose ?? true,
+		})
+		const { fakerSeed } = config
 
-		// Internal config for the runner
-		const internalConfig = {
-			context: (): TContext => ctx,
-			setSeederName,
-			// Automatically manage seeding state
-			onBeforeAll: async () => {
-				setSeedingActive(true)
-				if (config.onBeforeAll) {
-					await config.onBeforeAll()
-				}
-			},
-			onAfterAll: async () => {
-				setSeedingActive(false)
-				if (config.onAfterAll) {
-					await config.onAfterAll()
-				}
-			},
+		setSeedingActive(true)
+		try {
+			return await runSeedersCore(
+				seeders,
+				{
+					context: () => config.context({ faker, step, expect }),
+					beforeSeeder: (name, { fresh }) => {
+						if (fakerSeed !== undefined) faker.seed(fakerSeed + hashName(name))
+						return setSeederName(name, { fresh })
+					},
+					target: config.target,
+					onBeforeAll: config.onBeforeAll,
+					onAfterAll: config.onAfterAll,
+				},
+				options,
+			)
+		} finally {
+			setSeedingActive(false)
 		}
-
-		return runSeedersCore(seeders, internalConfig, options)
 	}
 
-	/**
-	 * Run seeders as a CLI command.
-	 * Handles help flag, dry-run flag, prints banner with seeder count, runs seeders, and exits with proper code.
-	 *
-	 * @param seeders - Array of seeders to run
-	 * @param options - Optional CLI options
-	 */
 	const runSeedersCli = async (
 		seeders: readonly SeederAny[],
-		options?: { name?: string },
+		options?: { name?: string; argv?: readonly string[] },
 	): Promise<void> => {
-		const args = process.argv.slice(2)
-		const name = options?.name ?? 'Seeders'
-
-		// Show help if requested
-		if (args.includes('--help') || args.includes('-h')) {
-			console.log(`
-${colorize('Usage:', 'cyan', 'bold')} bun run seed [options]
-
-${colorize('Options:', 'white', 'bold')}
-  --help, -h     Show this help message
-  --dry-run      Show execution order without running seeders
-
-Runs all ${seeders.length} seeders in dependency order.
-`)
-			process.exit(0)
-		}
-
-		// Dry run: show execution order without running
-		if (args.includes('--dry-run')) {
-			console.log(
-				`\n${colorize('🌱 Dry Run', 'cyan', 'bold')} ${colorize(`(${seeders.length} seeders)`, 'dim')}\n`,
-			)
-
-			// Create a map for quick seeder lookup
-			const seederMap = new Map<string, SeederAny>()
-			for (const seeder of seeders) {
-				seederMap.set(seeder.name, seeder)
-			}
-
-			try {
-				const order = resolveDependencyOrder(seeders)
-				console.log(colorize('Execution order:', 'white', 'bold'))
-				for (let i = 0; i < order.length; i++) {
-					const seederName = order[i]
-					if (!seederName) continue
-					const seeder = seederMap.get(seederName)
-					const deps = seeder?.dependsOn ?? []
-					const depsStr =
-						deps.length > 0 ? ` ${colorize(`(depends on: ${deps.join(', ')})`, 'dim')}` : ''
-					console.log(`  ${i + 1}. ${seederName}${depsStr}`)
-				}
-				console.log('')
-				process.exit(0)
-			} catch (error) {
-				console.error(colorize('Failed to resolve dependencies:', 'red'))
-				console.error(`  ${error instanceof Error ? error.message : String(error)}`)
-				process.exit(1)
-			}
-		}
-
-		console.log(
-			`\n${colorize(`🌱 Running ${name}`, 'cyan', 'bold')} ${colorize(`(${seeders.length} seeders)`, 'dim')}\n`,
-		)
-		const { success } = await runSeeders(seeders, {
-			printResults: true,
-			verbose: true,
+		const code = await runCli(seeders, runSeeders, {
+			name: options?.name ?? 'Seeders',
+			argv: options?.argv ?? process.argv.slice(2),
 		})
-		process.exit(success ? 0 : 1)
+		process.exit(code)
 	}
 
 	return {
@@ -312,4 +268,14 @@ Runs all ${seeders.length} seeders in dependency order.
 		runSeedersCli,
 		isSeedingActive,
 	}
+}
+
+/** Small stable string hash (FNV-1a), so a seeder's faker seed depends only on its name */
+function hashName(name: string): number {
+	let hash = 0x811c9dc5
+	for (let i = 0; i < name.length; i++) {
+		hash ^= name.charCodeAt(i)
+		hash = Math.imul(hash, 0x01000193)
+	}
+	return hash >>> 0
 }

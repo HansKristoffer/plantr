@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'bun:test'
 import {
 	CircularDependencyError,
+	DuplicateSeederError,
 	MissingDependencyError,
 	resolveDependencyOrder,
+	UnknownSeederError,
 } from './dependency-resolver'
 import type { SeederAny } from './types'
 
@@ -125,5 +127,26 @@ describe('resolveDependencyOrder', () => {
 		expect(result.indexOf('seederC')).toBeLessThan(result.indexOf('seederD'))
 		expect(result.indexOf('seederD')).toBeLessThan(result.indexOf('seederE'))
 		// seederF can be anywhere since it has no deps and nothing depends on it
+	})
+
+	it('should throw DuplicateSeederError for two seeders with one name', () => {
+		const seeders = [createMockSeeder('seederA'), createMockSeeder('seederA')]
+		expect(() => resolveDependencyOrder(seeders)).toThrow(DuplicateSeederError)
+	})
+
+	it('should select seeders with their transitive dependencies', () => {
+		const seeders = [
+			createMockSeeder('seederD', ['seederB']),
+			createMockSeeder('seederC', ['seederA']),
+			createMockSeeder('seederB', ['seederA']),
+			createMockSeeder('seederA'),
+		]
+		expect(resolveDependencyOrder(seeders, ['seederD'])).toEqual(['seederA', 'seederB', 'seederD'])
+	})
+
+	it('should throw UnknownSeederError for a selected name that is not registered', () => {
+		expect(() => resolveDependencyOrder([createMockSeeder('seederA')], ['seederX'])).toThrow(
+			UnknownSeederError,
+		)
 	})
 })
