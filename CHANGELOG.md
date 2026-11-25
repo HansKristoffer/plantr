@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.0](https://github.com/HansKristoffer/plantr/compare/v2.0.0...v2.1.0) (2026-11-25)
+
+
+### Features
+
+* parallel DAG seeding, lazy faker loading, batch cache I/O, and end-to-end TypeScript ([#5](https://github.com/HansKristoffer/plantr/issues/5)) ([c06dd30](https://github.com/HansKristoffer/plantr/commit/c06dd30b76a95871015cec609c73e89766476e7f))
+
 ## [2.0.0](https://github.com/HansKristoffer/plantr/compare/v1.0.1...v2.0.0) (2026-11-12)
 
 
