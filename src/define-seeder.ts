@@ -1,7 +1,7 @@
-import type { Seeder, SeederAny, SeederConfig } from './types'
+import type { MaybePromise, Seeder, SeederConfig, SeederName } from './types.js'
 
 /**
- * Create a typed seeder definition
+ * Create a typed seeder definition factory bound to `TContext`.
  *
  * This is the core factory that creates a seeder from a configuration.
  * The seeder can then be passed to `runSeeders` for execution.
@@ -30,17 +30,24 @@ export function createDefineSeeder<TContext>() {
 	return function defineSeeder<
 		TName extends string,
 		TOutput,
-		const TDeps extends readonly SeederAny[] = readonly [],
-	>(config: SeederConfig<TContext, TName, TOutput, TDeps>): Seeder<TContext, TName, TOutput> {
-		// Extract names from seeder objects at runtime
-		const dependsOnNames = (config.dependsOn ?? []).map((seeder) => seeder.name)
+		const TDeps extends readonly Seeder<TContext, string, unknown, string>[] = readonly [],
+	>(
+		config: SeederConfig<TContext, TName, TOutput, TDeps>,
+	): Seeder<TContext, TName, Awaited<TOutput>, SeederName<TDeps[number]>> {
+		// Extract and deduplicate names from seeder objects at runtime
+		const dependsOnNames = [
+			...new Set((config.dependsOn ?? []).map((seeder) => seeder.name)),
+		] as SeederName<TDeps[number]>[]
 
 		return {
 			name: config.name,
 			description: config.description,
 			dependsOn: dependsOnNames,
 			// Cast is safe because the deps object will have the correct shape at runtime
-			run: config.run as (ctx: TContext, deps: Record<string, unknown>) => Promise<TOutput>,
+			run: config.run as (
+				ctx: TContext,
+				deps: Record<string, unknown>,
+			) => MaybePromise<Awaited<TOutput>>,
 		}
 	}
 }

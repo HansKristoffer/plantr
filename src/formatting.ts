@@ -1,4 +1,4 @@
-import type { SeederResult } from './types'
+import type { SeederResult } from './types.js'
 
 /**
  * ANSI color codes for terminal output
@@ -15,13 +15,21 @@ const colors = {
 	gray: '\x1b[90m',
 } as const
 
-type ColorName = 'red' | 'green' | 'yellow' | 'cyan' | 'white' | 'gray' | 'dim'
-type StyleName = 'bold' | 'dim'
+export type ColorName = 'red' | 'green' | 'yellow' | 'cyan' | 'white' | 'gray' | 'dim'
+export type StyleName = 'bold' | 'dim'
+
+function supportsColor(): boolean {
+	if (process.env.NO_COLOR !== undefined && process.env.NO_COLOR !== '') return false
+	if (process.env.FORCE_COLOR !== undefined && process.env.FORCE_COLOR !== '0') return true
+	return Boolean(process.stdout.isTTY)
+}
 
 /**
- * Simple colorize function for terminal output
+ * Simple colorize function for terminal output.
+ * Respects `NO_COLOR`, `FORCE_COLOR`, and stdout TTY state.
  */
 export function colorize(text: string, color: ColorName, style?: StyleName): string {
+	if (!supportsColor()) return text
 	let result = ''
 	if (style === 'bold') result += colors.bold
 	if (style === 'dim') result += colors.dim
@@ -33,7 +41,7 @@ export function colorize(text: string, color: ColorName, style?: StyleName): str
  * Format duration in a human-readable way
  */
 export function formatDuration(ms: number): string {
-	if (ms < 1000) return `${ms}ms`
+	if (ms < 1000) return `${Math.round(ms)}ms`
 	if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
 	return `${(ms / 60000).toFixed(1)}m`
 }
@@ -41,13 +49,12 @@ export function formatDuration(ms: number): string {
 /**
  * Print a formatted table of seeder results
  */
-export function printResultsTable(results: SeederResult[]): void {
+export function printResultsTable(results: readonly SeederResult[]): void {
 	if (results.length === 0) {
 		console.log('No seeders registered')
 		return
 	}
 
-	// Calculate column widths
 	const nameHeader = 'Seeder'
 	const statusHeader = 'Status'
 	const durationHeader = 'Duration'
@@ -55,11 +62,16 @@ export function printResultsTable(results: SeederResult[]): void {
 	const maxNameLen = Math.max(nameHeader.length, ...results.map((r) => r.name.length))
 	const maxStatusLen = Math.max(
 		statusHeader.length,
-		10, // "✗ Failed" is the longest status
+		10, // "⊘ Skipped" / "○ Pending" fit with padding
 	)
 	const maxDurationLen = Math.max(
 		durationHeader.length,
-		...results.map((r) => formatDuration(r.durationMs ?? 0).length),
+		...results.map((r) => {
+			if (r.status === 'completed' || r.status === 'failed') {
+				return formatDuration(r.durationMs).length
+			}
+			return 1 // "-"
+		}),
 	)
 
 	const topBorder = `┌${'─'.repeat(maxNameLen + 2)}┬${'─'.repeat(maxStatusLen + 2)}┬${'─'.repeat(maxDurationLen + 2)}┐`
@@ -76,30 +88,28 @@ export function printResultsTable(results: SeederResult[]): void {
 	for (const result of results) {
 		let statusDisplay: string
 		let statusColor: ColorName
+		let duration = '-'
 
 		switch (result.status) {
 			case 'completed':
 				statusDisplay = '✓ Done'
 				statusColor = 'green'
+				duration = formatDuration(result.durationMs)
 				break
 			case 'failed':
 				statusDisplay = '✗ Failed'
 				statusColor = 'red'
+				duration = formatDuration(result.durationMs)
 				break
 			case 'skipped':
 				statusDisplay = '⊘ Skipped'
 				statusColor = 'yellow'
 				break
-			case 'running':
-				statusDisplay = '⟳ Running'
-				statusColor = 'yellow'
-				break
-			default:
+			case 'pending':
 				statusDisplay = '○ Pending'
 				statusColor = 'gray'
+				break
 		}
-
-		const duration = result.durationMs !== undefined ? formatDuration(result.durationMs) : '-'
 
 		console.log(
 			`│ ${result.name.padEnd(maxNameLen)} │ ${colorize(statusDisplay.padEnd(maxStatusLen), statusColor)} │ ${colorize(duration.padEnd(maxDurationLen), 'dim')} │`,
@@ -118,21 +128,18 @@ const escapeAnnotation = (text: string) =>
  * stack, cause and own fields via Bun.inspect) and a hint when cached steps ran first.
  * Under GitHub Actions, also prints one `::error` annotation per failed seeder.
  */
-export function printErrors(results: SeederResult[]): void {
+export function printErrors(results: readonly SeederResult[]): void {
 	const failed = results.filter((r) => r.status === 'failed')
 
 	for (const result of failed) {
 		const where = result.failedStep ? ` in step "${result.failedStep}"` : ''
 		console.log(colorize(`❌ Seeder "${result.name}" failed${where}:`, 'red'))
-		if (result.error) {
-			const details = Bun.inspect(result.error, { colors: Boolean(process.stdout.isTTY) })
-			for (const line of details.split('\n')) console.log(`   ${line}`)
-		}
-		const cached = result.cachedSteps ?? []
-		if (cached.length > 0) {
+		const details = Bun.inspect(result.error, { colors: supportsColor() })
+		for (const line of details.split('\n')) console.log(`   ${line}`)
+		if (result.cachedSteps.length > 0) {
 			console.log(
 				colorize(
-					`   ${cached.length} earlier step(s) came from the cache: ${cached.join(', ')}. If they are stale, run this seeder fresh (CLI: --only ${result.name} --fresh).`,
+					`   ${result.cachedSteps.length} earlier step(s) came from the cache: ${result.cachedSteps.join(', ')}. If they are stale, run this seeder fresh (CLI: --only ${result.name} --fresh).`,
 					'yellow',
 				),
 			)
@@ -140,7 +147,7 @@ export function printErrors(results: SeederResult[]): void {
 		if (process.env.GITHUB_ACTIONS === 'true') {
 			const title = `Seeder ${result.name} failed${where}`.replace(/[:,]/g, ' ')
 			console.log(
-				`::error title=${escapeAnnotation(title)}::${escapeAnnotation(result.error?.message ?? 'failed')}`,
+				`::error title=${escapeAnnotation(title)}::${escapeAnnotation(result.error.message || 'failed')}`,
 			)
 		}
 		console.log('')
@@ -166,7 +173,7 @@ export function printSeederHeader(
 }
 
 /**
- * Print completion status after a seeder runs
+ * Print completion status after a seeder runs (sequential mode)
  */
 export function printSeederComplete(durationMs: number, success: boolean): void {
 	console.log('')
@@ -179,19 +186,56 @@ export function printSeederComplete(durationMs: number, success: boolean): void 
 }
 
 /**
+ * Print compact prefixed completion status (concurrent mode)
+ */
+export function printConcurrentComplete(
+	seederName: string,
+	durationMs: number,
+	success: boolean,
+): void {
+	const tag = colorize(`[${seederName}]`, 'cyan', 'bold')
+	if (success) {
+		console.log(`  ${tag} ${colorize(`✓ Completed in ${formatDuration(durationMs)}`, 'green')}`)
+	} else {
+		console.log(`  ${tag} ${colorize(`✗ Failed after ${formatDuration(durationMs)}`, 'red')}`)
+	}
+}
+
+/**
+ * Print compact prefixed skip status (concurrent mode)
+ */
+export function printConcurrentSkipped(seederName: string, failedDeps: readonly string[]): void {
+	const tag = colorize(`[${seederName}]`, 'cyan', 'bold')
+	console.log(
+		`  ${tag} ${colorize(`⊘ Skipped (depends on failed: ${failedDeps.join(', ')})`, 'yellow')}`,
+	)
+}
+
+/**
  * Print the initial banner when seeding starts
  */
-export function printStartBanner(target?: { label: string; local: boolean }): void {
+export function printStartBanner(options?: {
+	name?: string | undefined
+	count?: number | undefined
+	target?: { label: string; local: boolean } | undefined
+	concurrency?: number | undefined
+}): void {
+	const name = options?.name ?? 'Seeders'
+	const countText =
+		options?.count !== undefined
+			? ` ${colorize(`(${options.count} ${options.count === 1 ? 'seeder' : 'seeders'}${options.concurrency && options.concurrency > 1 ? `, concurrency: ${options.concurrency === Number.POSITIVE_INFINITY ? '∞' : options.concurrency}` : ''})`, 'dim')}`
+			: ''
+	const target = options?.target
 	const targetText = target
 		? ` ${colorize(`→ ${target.label}`, 'dim')}${target.local ? '' : ` ${colorize('(remote, allowed)', 'yellow')}`}`
 		: ''
-	console.log(`\n${colorize('🌱 Running Seeders', 'cyan', 'bold')}${targetText}\n`)
+	console.log(`\n${colorize(`🌱 Running ${name}`, 'cyan', 'bold')}${countText}${targetText}\n`)
 }
 
 /**
  * Print message when a seeder is skipped due to failed dependencies
  */
-export function printSeederSkipped(failedDeps: string[]): void {
+export function printSeederSkipped(failedDeps: readonly string[]): void {
 	console.log('')
 	console.log(colorize(`    ⊘ Skipped (depends on failed: ${failedDeps.join(', ')})`, 'yellow'))
 	console.log('')
@@ -200,21 +244,62 @@ export function printSeederSkipped(failedDeps: string[]): void {
 /**
  * Print the final summary after all seeders complete
  */
-export function printSummary(results: SeederResult[]): void {
-	const completed = results.filter((r) => r.status === 'completed').length
-	const failed = results.filter((r) => r.status === 'failed').length
-	const skipped = results.filter((r) => r.status === 'skipped').length
-	const pending = results.filter((r) => r.status === 'pending').length
+export function printSummary(
+	results: readonly SeederResult[],
+	totalDurationMs?: number,
+	concurrency = 1,
+): void {
+	let completed = 0
+	let failed = 0
+	let skipped = 0
+	let pending = 0
+	let cachedCount = 0
+	let totalWorkMs = 0
+
+	for (const r of results) {
+		switch (r.status) {
+			case 'completed':
+				completed++
+				cachedCount += r.cachedSteps.length
+				totalWorkMs += r.durationMs
+				break
+			case 'failed':
+				failed++
+				cachedCount += r.cachedSteps.length
+				totalWorkMs += r.durationMs
+				break
+			case 'skipped':
+				skipped++
+				break
+			case 'pending':
+				pending++
+				break
+		}
+	}
+
+	const durationSuffix =
+		totalDurationMs !== undefined ? ` in ${formatDuration(totalDurationMs)}` : ''
+	const speedupSuffix =
+		concurrency > 1 &&
+		totalDurationMs !== undefined &&
+		totalDurationMs > 0 &&
+		totalWorkMs > totalDurationMs * 1.1
+			? ` ${colorize(`(${formatDuration(totalWorkMs)} work, ${(totalWorkMs / totalDurationMs).toFixed(1)}× faster)`, 'dim')}`
+			: ''
+	const cacheSuffix =
+		cachedCount > 0
+			? ` ${colorize(`(${cachedCount} cached ${cachedCount === 1 ? 'step' : 'steps'})`, 'cyan')}`
+			: ''
 
 	if (failed > 0 || skipped > 0) {
 		const parts = [`${completed} completed`]
 		if (failed > 0) parts.push(`${failed} failed`)
 		if (skipped > 0) parts.push(`${skipped} skipped`)
 		if (pending > 0) parts.push(`${pending} pending`)
-		console.log(colorize(`Seeding failed: ${parts.join(', ')}`, 'red'))
+		console.log(colorize(`Seeding failed: ${parts.join(', ')}${durationSuffix}`, 'red'))
 	} else {
 		console.log(
-			`${colorize('✓ Seeding complete:', 'green')} ${completed} seeders executed successfully\n`,
+			`${colorize('✓ Seeding complete:', 'green')} ${completed} ${completed === 1 ? 'seeder' : 'seeders'} executed successfully${durationSuffix}${speedupSuffix}${cacheSuffix}\n`,
 		)
 	}
 }

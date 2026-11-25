@@ -1,58 +1,79 @@
 import { expect } from 'bun:test'
-import { faker } from '@faker-js/faker'
-import { runCli } from './cli'
-import { createDefineSeeder } from './define-seeder'
-import { runSeedersCore } from './run-seeders'
-import { isSeedingActive, setSeedingActive } from './seeding-state'
-import { createStepRunner, type SeederCache } from './step'
+import { AsyncLocalStorage } from 'node:async_hooks'
+import type { Faker } from '@faker-js/faker'
+import { type RunSeedersCliOptions, runCli } from './cli.js'
+import { createDefineSeeder } from './define-seeder.js'
+import { getDefaultFaker, lazyFaker } from './lazy-faker.js'
+import { runSeedersCore } from './run-seeders.js'
+import { isSeedingActive } from './seeding-state.js'
+import { createStepRunner, type SeederCache } from './step.js'
 import type {
 	BaseSeederContext,
+	MaybePromise,
+	Prettify,
 	RunSeedersOptions,
+	RunSeedersResult,
 	Seeder,
-	SeederAny,
 	SeederConfig,
-	SeederResult,
-} from './types'
+	SeederName,
+	ValidateSeeders,
+} from './types.js'
+
+/**
+ * Full context type resolved from `BaseSeederContext` plus the extra properties
+ * returned by `config.context`. Any base key returned by `context` overrides the default.
+ */
+export type ResolvedContext<TExtra extends object = Record<never, never>> = Prettify<
+	Omit<BaseSeederContext, keyof TExtra> & TExtra
+>
 
 /**
  * Configuration for creating a seeder instance.
- * The context factory receives the base context (faker, step, expect) and can extend it.
+ * `context` is optional and its returned properties are automatically merged onto `BaseSeederContext`.
  */
-export type SeederInstanceConfig<TContext extends BaseSeederContext> = {
+export type SeederInstanceConfig<TExtra extends object = Record<never, never>> = {
 	/**
-	 * Factory function that creates the context for each seeder.
-	 * Receives the base context (faker, step, expect) and should return the full context.
+	 * Optional factory function that extends the base context (`faker`, `step`, `expect`).
+	 * Returned properties are merged onto `base` automatically — no need to spread `...base`,
+	 * though spreading or overriding keys (such as `faker`) also works.
+	 * Called once per run, after `onBeforeAll`.
 	 *
 	 * @example
 	 * ```typescript
-	 * context: (base) => ({
-	 *   ...base,
-	 *   prisma,
-	 *   myHelper: () => { ... }
-	 * })
+	 * context: () => ({ prisma })
 	 * ```
 	 */
-	context: (base: BaseSeederContext) => TContext | Promise<TContext>
+	context?: ((base: BaseSeederContext) => MaybePromise<TExtra>) | undefined
 
 	/**
 	 * Optional cache for step caching.
-	 * Provide get/set functions to enable caching in the step runner.
+	 * Provide `get` / `set` (and optionally `getAll` for single-query preloading).
 	 *
 	 * @example
 	 * ```typescript
 	 * cache: {
-	 *   get: async (key) => {
-	 *     const cached = await prisma.seedCache.findUnique({ where: { key } })
-	 *     return cached?.output as T | undefined
-	 *   },
+	 *   get: async (key) => (await prisma.seedCache.findUnique({ where: { key } }))?.output,
 	 *   set: async (key, value) => {
 	 *     const output = value as Prisma.InputJsonValue
 	 *     await prisma.seedCache.upsert({ where: { key }, create: { key, output }, update: { output } })
-	 *   }
+	 *   },
 	 * }
 	 * ```
 	 */
-	cache?: SeederCache
+	cache?: SeederCache | undefined
+
+	/**
+	 * Optional: default maximum number of independent seeders to run concurrently (default: 1).
+	 * Applies to both `runSeeders` and `runSeedersCli` unless overridden per run or via `--concurrency`.
+	 * Set to a positive integer (e.g. `4`) or `Infinity` to run independent DAG branches in parallel.
+	 */
+	concurrency?: number | undefined
+
+	/**
+	 * Optional: custom `Faker` instance (e.g. a non-English locale like `fakerDE` or `fakerNB_NO`).
+	 * Defaults to the lazy-loaded English locale (`@faker-js/faker/locale/en`).
+	 */
+	faker?: Faker | undefined
 
 	/**
 	 * Optional: the database URL this instance writes to, e.g. `() => process.env.DATABASE_URL`.
@@ -60,14 +81,14 @@ export type SeederInstanceConfig<TContext extends BaseSeederContext> = {
 	 * host that is not local unless it passes `allowRemote` (CLI: `--allow-remote`).
 	 * Return undefined to skip the check.
 	 */
-	target?: () => string | undefined
+	target?: (() => string | undefined) | undefined
 
 	/**
 	 * Optional: seed faker before each seeder with this number plus a hash of the
 	 * seeder's name, so every run generates the same data and adding a seeder does
-	 * not shift the others'.
+	 * not shift the others'. Works safely with parallel `concurrency` via isolated Faker instances.
 	 */
-	fakerSeed?: number
+	fakerSeed?: number | undefined
 
 	/**
 	 * Called before all seeders run, before the context factory.
@@ -80,11 +101,11 @@ export type SeederInstanceConfig<TContext extends BaseSeederContext> = {
 	 * }
 	 * ```
 	 */
-	onBeforeAll?: () => void | Promise<void>
+	onBeforeAll?: (() => MaybePromise<void>) | undefined
 
 	/**
 	 * Called after all seeders complete (success or failure), also when the context
-	 * factory throws.
+	 * factory throws. Receives the created context (or `undefined` if the context factory threw).
 	 * Use for cleanup like disconnecting from databases.
 	 *
 	 * @example
@@ -94,15 +115,18 @@ export type SeederInstanceConfig<TContext extends BaseSeederContext> = {
 	 * }
 	 * ```
 	 */
-	onAfterAll?: () => void | Promise<void>
+	onAfterAll?:
+		| ((ctx: NoInfer<ResolvedContext<TExtra>> | undefined) => MaybePromise<void>)
+		| undefined
 }
 
 /**
  * Result type for the seeder instance
  */
-export type SeederInstance<TContext extends BaseSeederContext> = {
+export type SeederInstance<TContext extends object = BaseSeederContext> = {
 	/**
-	 * Define a new seeder with typed dependencies
+	 * Define a new seeder with typed dependencies.
+	 * `dependsOn` only accepts seeders whose context is compatible with this instance.
 	 *
 	 * @example
 	 * ```typescript
@@ -120,31 +144,39 @@ export type SeederInstance<TContext extends BaseSeederContext> = {
 	defineSeeder: <
 		TName extends string,
 		TOutput,
-		const TDeps extends readonly SeederAny[] = readonly [],
+		const TDeps extends readonly Seeder<TContext, string, unknown, string>[] = readonly [],
 	>(
 		config: SeederConfig<TContext, TName, TOutput, TDeps>,
-	) => Seeder<TContext, TName, TOutput>
+	) => Seeder<TContext, TName, Awaited<TOutput>, SeederName<TDeps[number]>>
 
 	/**
 	 * Run an array of seeders in dependency order.
 	 * Automatically sets seeding state to active during execution.
 	 *
+	 * - Enforces context compatibility across seeders at compile time
+	 * - Flags missing dependencies at compile time when passing known seeders
+	 * - Autocompletes and checks `only` and `fresh` against the registered seeder names
+	 * - Returns strongly typed `outputs` and discriminated-union `results`
+	 *
 	 * @param seeders - Array of seeders to run
 	 * @param options - Optional runner options
-	 * @returns Object containing results and success status; `success` is false when a seeder failed
+	 * @returns Object containing `success`, typed `results`, and typed `outputs`
 	 * @throws Before anything runs, on an invalid registry (duplicate name, missing
-	 * dependency, cycle), an unknown name in `only`/`fresh`, or a refused `target`
+	 * dependency, cycle), an unknown name in `only`/`fresh`, invalid `concurrency`, or a refused `target`
 	 */
-	runSeeders: (
-		seeders: readonly SeederAny[],
-		options?: RunSeedersOptions,
-	) => Promise<{ results: SeederResult[]; success: boolean }>
+	runSeeders: <
+		const TSeeders extends readonly Seeder<TContext, string, unknown, string>[],
+		const TOptions extends RunSeedersOptions<SeederName<TSeeders[number]>> | undefined = undefined,
+	>(
+		seeders: TSeeders & ValidateSeeders<TSeeders>,
+		options?: TOptions,
+	) => Promise<RunSeedersResult<TSeeders, TOptions>>
 
 	/**
 	 * Run seeders as a CLI command: parses the arguments, runs, and exits with 0 or 1.
 	 * Seeder names (positional or `--only a,b`) select seeders plus their dependencies;
-	 * `--fresh`, `--continue-on-failure`, `--allow-remote`, `--dry-run` and `--help` map
-	 * to the runner options. Unknown flags and names exit 1.
+	 * `--fresh`, `--concurrency`, `--continue-on-failure`, `--allow-remote`, `--quiet`,
+	 * `--dry-run`, `--list`, and `--help` map to the runner options. Unknown flags and names exit 1.
 	 *
 	 * @example
 	 * ```typescript
@@ -154,13 +186,9 @@ export type SeederInstance<TContext extends BaseSeederContext> = {
 	 * }
 	 * ```
 	 */
-	runSeedersCli: (
-		seeders: readonly SeederAny[],
-		options?: {
-			name?: string
-			/** Arguments to parse (default: `process.argv.slice(2)`) */
-			argv?: readonly string[]
-		},
+	runSeedersCli: <const TSeeders extends readonly Seeder<TContext, string, unknown, string>[]>(
+		seeders: TSeeders & ValidateSeeders<TSeeders>,
+		options?: RunSeedersCliOptions,
 	) => Promise<void>
 
 	/**
@@ -178,87 +206,174 @@ export type SeederInstance<TContext extends BaseSeederContext> = {
 	isSeedingActive: () => boolean
 }
 
+type FakerConstructor = new (options: { locale: Faker['rawDefinitions'] }) => Faker
+
+/** Create an isolated Faker instance using the same locale definitions as `baseFaker` */
+function cloneFaker(baseFaker: Faker): Faker {
+	const Ctor = baseFaker.constructor as FakerConstructor | undefined
+	if (typeof Ctor === 'function' && 'rawDefinitions' in baseFaker && baseFaker.rawDefinitions) {
+		return new Ctor({ locale: baseFaker.rawDefinitions })
+	}
+	return baseFaker
+}
+
 /**
- * Create a seeder instance with a custom context
+ * Create a seeder instance with an optional custom context.
  *
  * This is the main entry point for the seeder library. The library provides
- * a base context with faker, step, and expect. Consumers extend this with
- * their own context (e.g. prisma, custom helpers).
+ * a base context with `faker`, `step`, and `expect`. Consumers can extend it
+ * without needing explicit generics or manual `...base` spreads.
  *
- * The seeding state is automatically managed - set to active when runSeeders
- * starts and set to inactive when it completes.
+ * The seeding state is automatically managed - set to active after validation
+ * succeeds and cleared when the run completes.
  *
  * @example
  * ```typescript
  * import { createSeederInstance } from 'plantr'
  *
- * type MyContext = BaseSeederContext & { prisma: typeof prisma }
- *
- * const { defineSeeder, runSeeders, isSeedingActive } = createSeederInstance<MyContext>({
- *   context: (base) => ({
- *     ...base,
- *     prisma,
- *   }),
+ * export const { defineSeeder, runSeeders, runSeedersCli } = createSeederInstance({
+ *   context: () => ({ prisma }),
  *   target: () => process.env.DATABASE_URL,
  * })
- *
- * export { defineSeeder, isSeedingActive }
- *
- * // In your message/queue system:
- * if (isSeedingActive()) {
- *   console.log('Skipping side effect during seeding')
- *   return
- * }
- *
- * // Later...
- * await runSeeders([seeder1, seeder2])
  * ```
  */
-export function createSeederInstance<TContext extends BaseSeederContext = BaseSeederContext>(
-	config: SeederInstanceConfig<TContext>,
-): SeederInstance<TContext> {
-	const defineSeeder = createDefineSeeder<TContext>()
+type FakerSlot = {
+	name: string
+	isolated: boolean
+	instance?: Faker
+}
 
-	const runSeeders = async (
-		seeders: readonly SeederAny[],
+export function createSeederInstance<TExtra extends object = Record<never, never>>(
+	config?: SeederInstanceConfig<TExtra>,
+): SeederInstance<ResolvedContext<TExtra>> {
+	type TContext = ResolvedContext<TExtra>
+
+	const defineSeeder = createDefineSeeder<TContext>()
+	const customFaker = config?.faker && config.faker !== lazyFaker ? config.faker : undefined
+	const resolveBaseFaker = (): Faker => customFaker ?? getDefaultFaker()
+	const fakerSeed = config?.fakerSeed
+	const defaultConcurrency = config?.concurrency
+
+	const runInternal = async (
+		seeders: readonly Seeder<TContext, string, unknown, string>[],
 		options?: RunSeedersOptions,
-	): Promise<{ results: SeederResult[]; success: boolean }> => {
-		// One step runner per run, so cache keys and duplicate checks are per run
-		const { step, setSeederName } = createStepRunner({
-			cache: config.cache,
+		bannerName?: string,
+	) => {
+		// One step runner and faker storage per run, so cache keys, duplicate checks, and scopes are isolated
+		const stepRunner = createStepRunner({
+			cache: config?.cache,
 			log: options?.verbose ?? true,
 		})
-		const { fakerSeed } = config
-
-		setSeedingActive(true)
-		try {
-			return await runSeedersCore(
-				seeders,
-				{
-					context: () => config.context({ faker, step, expect }),
-					beforeSeeder: (name, { fresh }) => {
-						if (fakerSeed !== undefined) faker.seed(fakerSeed + hashName(name))
-						return setSeederName(name, { fresh })
-					},
-					target: config.target,
-					onBeforeAll: config.onBeforeAll,
-					onAfterAll: config.onAfterAll,
-				},
-				options,
-			)
-		} finally {
-			setSeedingActive(false)
+		const fakerStorage = new AsyncLocalStorage<FakerSlot>()
+		const resolveActiveFaker = (): Faker => {
+			const slot = fakerStorage.getStore()
+			if (!slot) return resolveBaseFaker()
+			if (slot.instance) return slot.instance
+			const base = resolveBaseFaker()
+			if (!slot.isolated) {
+				slot.instance = base
+				return base
+			}
+			const cloned = cloneFaker(base)
+			if (fakerSeed !== undefined) {
+				cloned.seed(fakerSeed + hashName(slot.name))
+			}
+			slot.instance = cloned
+			return cloned
 		}
+
+		// Lazy proxy: neither loads faker nor clones per-seeder Faker until a seeder accesses ctx.faker
+		const scopedFaker: Faker = new Proxy({} as Faker, {
+			get(_target, prop) {
+				const active = resolveActiveFaker()
+				const value = Reflect.get(active, prop, active)
+				return typeof value === 'function' && prop !== 'constructor' ? value.bind(active) : value
+			},
+			set(_target, prop, value) {
+				const active = resolveActiveFaker()
+				return Reflect.set(active, prop, value, active)
+			},
+			has(_target, prop) {
+				return Reflect.has(resolveActiveFaker(), prop)
+			},
+			ownKeys() {
+				return Reflect.ownKeys(resolveActiveFaker())
+			},
+			getOwnPropertyDescriptor(_target, prop) {
+				const desc = Reflect.getOwnPropertyDescriptor(resolveActiveFaker(), prop)
+				return desc ? { ...desc, configurable: true } : undefined
+			},
+			getPrototypeOf() {
+				return Reflect.getPrototypeOf(resolveActiveFaker())
+			},
+		})
+
+		const mergedOptions: RunSeedersOptions =
+			defaultConcurrency !== undefined && options?.concurrency === undefined
+				? { ...options, concurrency: defaultConcurrency }
+				: (options ?? {})
+
+		return runSeedersCore(
+			seeders,
+			{
+				context: async () => {
+					const base: BaseSeederContext = {
+						faker: scopedFaker,
+						step: stepRunner.step,
+						expect,
+					}
+					if (!config?.context) return base as unknown as TContext
+					const extra = await config.context(base)
+					return extra === base
+						? (base as unknown as TContext)
+						: ({ ...base, ...extra } as unknown as TContext)
+				},
+				preloadCache: config?.cache?.getAll ? () => stepRunner.preload() : undefined,
+				flushCache: config?.cache?.setMany ? () => stepRunner.flush() : undefined,
+				createSeederScope: ({ name, fresh, concurrent }) => {
+					const stepScope = stepRunner.createScope({
+						seederName: name,
+						fresh,
+						prefix: concurrent ? name : undefined,
+					})
+					const slot: FakerSlot = {
+						name,
+						isolated: fakerSeed !== undefined || concurrent,
+					}
+
+					return {
+						record: stepScope.record,
+						run: <T>(fn: () => Promise<T>) =>
+							stepRunner.runWithScope(stepScope, () => fakerStorage.run(slot, fn)),
+					}
+				},
+				bannerName,
+				target: config?.target,
+				onBeforeAll: config?.onBeforeAll,
+				onAfterAll: config?.onAfterAll,
+			},
+			mergedOptions,
+		)
 	}
 
-	const runSeedersCli = async (
-		seeders: readonly SeederAny[],
-		options?: { name?: string; argv?: readonly string[] },
-	): Promise<void> => {
-		const code = await runCli(seeders, runSeeders, {
-			name: options?.name ?? 'Seeders',
-			argv: options?.argv ?? process.argv.slice(2),
-		})
+	const runSeeders = ((
+		seeders: readonly Seeder<TContext, string, unknown, string>[],
+		options?: RunSeedersOptions,
+	) => runInternal(seeders, options)) as SeederInstance<TContext>['runSeeders']
+
+	const runSeedersCli: SeederInstance<TContext>['runSeedersCli'] = async (seeders, options) => {
+		const bannerName = options?.name ?? 'Seeders'
+		const code = await runCli(
+			seeders,
+			(s, opts) =>
+				runInternal(s as readonly Seeder<TContext, string, unknown, string>[], opts, bannerName),
+			{
+				name: bannerName,
+				argv: options?.argv ?? process.argv.slice(2),
+				target: config?.target,
+				defaultConcurrency,
+			},
+		)
 		process.exit(code)
 	}
 

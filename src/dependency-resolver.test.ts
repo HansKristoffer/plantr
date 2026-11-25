@@ -5,8 +5,8 @@ import {
 	MissingDependencyError,
 	resolveDependencyOrder,
 	UnknownSeederError,
-} from './dependency-resolver'
-import type { SeederAny } from './types'
+} from './dependency-resolver.js'
+import type { SeederAny } from './types.js'
 
 // Helper to create a mock seeder
 function createMockSeeder(name: string, dependsOn: string[] = []): SeederAny {
@@ -148,5 +148,13 @@ describe('resolveDependencyOrder', () => {
 		expect(() => resolveDependencyOrder([createMockSeeder('seederA')], ['seederX'])).toThrow(
 			UnknownSeederError,
 		)
+	})
+
+	it('should deduplicate repeated dependencies on a seeder', () => {
+		const seeders = [
+			createMockSeeder('seederB', ['seederA', 'seederA']),
+			createMockSeeder('seederA'),
+		]
+		expect(resolveDependencyOrder(seeders)).toEqual(['seederA', 'seederB'])
 	})
 })

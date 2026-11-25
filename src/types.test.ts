@@ -1,0 +1,231 @@
+import { describe, expect, it } from 'bun:test'
+import {
+	type BaseSeederContext,
+	createSeederInstance,
+	type Seeder,
+	type SeederCache,
+	type SeederDeps,
+	type SeederName,
+	type SeederOutput,
+} from '../index.js'
+
+/** Compile-time equality assertion */
+type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
+	? true
+	: false
+const assertType = <_T extends true>() => {}
+
+describe('TypeScript ergonomics and type safety', () => {
+	it('infers context automatically without generics or ...base', () => {
+		// Zero args
+		const minimal = createSeederInstance()
+		const s0 = minimal.defineSeeder({
+			name: 'minimal',
+			run: ({ faker, step, expect: exp }) => {
+				expect(typeof faker.person.fullName).toBe('function')
+				expect(typeof step).toBe('function')
+				expect(typeof exp).toBe('function')
+				return { ok: true }
+			},
+		})
+		assertType<Equal<SeederName<typeof s0>, 'minimal'>>()
+		assertType<Equal<SeederOutput<typeof s0>, { ok: boolean }>>()
+		assertType<Equal<SeederDeps<typeof s0>, never>>()
+
+		// Auto-merged custom context (no ...base, no <MyContext>)
+		const db = { query: (sql: string) => sql.length }
+		const instance = createSeederInstance({
+			context: () => ({ db }),
+			onAfterAll: (ctx) => {
+				if (ctx) {
+					const len: number = ctx.db.query('SELECT 1')
+					void len
+				}
+			},
+		})
+
+		const s1 = instance.defineSeeder({
+			name: 's1',
+			run: ({ db: client, faker }) => ({
+				count: client.query(faker.lorem.word()),
+			}),
+		})
+		assertType<Equal<SeederOutput<typeof s1>, { count: number }>>()
+
+		// Interface-based explicit generic still works
+		interface LegacyContext extends BaseSeederContext {
+			flag: boolean
+		}
+		const legacy = createSeederInstance<LegacyContext>({
+			context: (base) => ({ ...base, flag: true }),
+		})
+		const sLegacy = legacy.defineSeeder({
+			name: 'legacy',
+			run: ({ flag }) => flag,
+		})
+		assertType<Equal<SeederOutput<typeof sLegacy>, boolean>>()
+
+		expect(true).toBe(true)
+	})
+
+	it('enforces context compatibility across instances (contravariance)', () => {
+		const baseInst = createSeederInstance()
+		const dbA = createSeederInstance({ context: () => ({ a: 1 as const }) })
+		const dbB = createSeederInstance({ context: () => ({ b: 'two' as const }) })
+
+		const sharedSeeder = baseInst.defineSeeder({
+			name: 'shared',
+			run: () => ({ sharedId: 's1' }),
+		})
+		const seederA = dbA.defineSeeder({
+			name: 'seederA',
+			dependsOn: [sharedSeeder],
+			run: ({ a }, deps) => ({ a, sharedId: deps.shared.sharedId }),
+		})
+		const seederB = dbB.defineSeeder({
+			name: 'seederB',
+			run: ({ b }) => ({ b }),
+		})
+
+		// Shared BaseSeederContext seeder is allowed in dbA
+		assertType<Equal<SeederDeps<typeof seederA>, 'shared'>>()
+		void (() => dbA.runSeeders([sharedSeeder, seederA]))
+
+		// Incompatible seeder from dbB is rejected in dbA.defineSeeder.dependsOn
+		void (() =>
+			dbA.defineSeeder({
+				name: 'badDep',
+				// @ts-expect-error seederB requires { b } which dbA does not provide
+				dependsOn: [seederB],
+				run: () => ({}),
+			}))
+
+		// Incompatible seeder from dbB is rejected in dbA.runSeeders
+		void (() =>
+			dbA.runSeeders([
+				// @ts-expect-error seederB requires { b } which dbA does not provide
+				seederB,
+			]))
+
+		expect(true).toBe(true)
+	})
+
+	it('catches missing dependencies, only/fresh typos, and types outputs & results', () => {
+		const { defineSeeder, runSeeders } = createSeederInstance()
+
+		const user = defineSeeder({
+			name: 'user',
+			run: async () => ({ userId: 'u1' }),
+		})
+		const post = defineSeeder({
+			name: 'post',
+			dependsOn: [user],
+			run: (_ctx, deps) => ({ postId: `p-${deps.user.userId}` }),
+		})
+		const extra = defineSeeder({
+			name: 'extra',
+			run: () => 42,
+		})
+
+		assertType<Equal<SeederDeps<typeof post>, 'user'>>()
+
+		// Missing dependency caught at compile time
+		void (() =>
+			runSeeders(
+				// @ts-expect-error missing required seeder "user"
+				[post],
+			))
+
+		// Typo in `only` caught at compile time
+		void (() =>
+			runSeeders([user, post], {
+				// @ts-expect-error "pst" is not a registered seeder name
+				only: ['pst'],
+			}))
+
+		// Typo in `fresh` caught at compile time
+		void (() =>
+			runSeeders([user, post], {
+				// @ts-expect-error "usr" is not a registered seeder name
+				fresh: ['usr'],
+			}))
+
+		// Typed outputs without `only`
+		void (async () => {
+			const res = await runSeeders([user, post, extra], { verbose: false, printResults: false })
+			if (res.success) {
+				assertType<Equal<typeof res.outputs.user, { userId: string }>>()
+				assertType<Equal<typeof res.outputs.post, { postId: string }>>()
+				assertType<Equal<typeof res.outputs.extra, number>>()
+			} else {
+				assertType<Equal<typeof res.outputs.user, { userId: string } | undefined>>()
+			}
+
+			// Narrowing results by name and status
+			const postResult = res.results.find((r) => r.name === 'post')
+			if (postResult?.status === 'completed') {
+				assertType<Equal<typeof postResult.output, { postId: string }>>()
+				assertType<Equal<typeof postResult.durationMs, number>>()
+			}
+			const failedResult = res.results.find((r) => r.status === 'failed')
+			if (failedResult) {
+				assertType<Equal<typeof failedResult.error, Error>>()
+				assertType<Equal<typeof failedResult.durationMs, number>>()
+			}
+			const skippedResult = res.results.find((r) => r.status === 'skipped')
+			if (skippedResult) {
+				assertType<Equal<typeof skippedResult.failedDeps, string[]>>()
+			}
+		})
+
+		// Typed outputs with `only`: selected seeders are non-optional, unselected are optional
+		void (async () => {
+			const res = await runSeeders([user, post, extra], { only: ['post'] })
+			if (res.success) {
+				assertType<Equal<typeof res.outputs.post, { postId: string }>>()
+				assertType<Equal<typeof res.outputs.extra, number | undefined>>()
+			}
+		})
+
+		// Dynamic arrays gracefully widen to string without breaking
+		void (async () => {
+			const dynamic: Seeder<BaseSeederContext>[] = [user, post]
+			await runSeeders(dynamic, { only: ['any-name'], fresh: ['any-name'] })
+		})
+
+		expect(true).toBe(true)
+	})
+
+	it('types StepOptions and SeederCache cleanly without unsafe casts', () => {
+		const map = new Map<string, unknown>()
+		// Sync SeederCache with zero casts
+		const cache: SeederCache = {
+			get: (key) => map.get(key),
+			set: (key, value) => {
+				map.set(key, value)
+			},
+			getAll: () => map,
+		}
+
+		const { defineSeeder } = createSeederInstance({ cache })
+
+		void defineSeeder({
+			name: 'stepTypes',
+			run: async ({ step }) => {
+				await step('plain', () => 1)
+				await step('cached', () => 2, { useCache: true, key: 'k', version: { a: 1, b: ['x'] } })
+
+				// @ts-expect-error version requires useCache: true
+				await step('bad1', () => 1, { version: 1 })
+				// @ts-expect-error key requires useCache: true
+				await step('bad2', () => 1, { key: 'k' })
+				// @ts-expect-error version must be JSON-serializable
+				await step('bad3', () => 1, { useCache: true, version: () => {} })
+				// @ts-expect-error BigInt is not JSON-serializable
+				await step('bad4', () => 1, { useCache: true, version: 1n })
+			},
+		})
+
+		expect(true).toBe(true)
+	})
+})
