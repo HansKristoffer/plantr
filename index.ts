@@ -9,15 +9,10 @@
  *
  * @example
  * ```typescript
- * import { createSeederInstance, type BaseSeederContext } from 'plantr'
+ * import { createSeederInstance } from 'plantr'
  *
- * type MyContext = BaseSeederContext & { prisma: typeof prisma }
- *
- * const { defineSeeder, runSeeders } = createSeederInstance<MyContext>({
- *   context: (base) => ({
- *     ...base,
- *     prisma,
- *   }),
+ * const { defineSeeder, runSeeders } = createSeederInstance({
+ *   context: () => ({ prisma }),
  * })
  *
  * const userSeeder = defineSeeder({
@@ -32,48 +27,86 @@
  *   }
  * })
  *
- * await runSeeders([userSeeder])
+ * const run = await runSeeders([userSeeder])
+ * if (run.success) {
+ *   console.log(run.outputs.userSeeder.userId)
+ * }
  * ```
  */
 
-// Re-export faker and expect for convenience
+// Re-export lazy-loaded English faker (0ms until first access) and expect for convenience
 export { expect } from 'bun:test'
-export { faker } from '@faker-js/faker'
-
+export type { Faker } from '@faker-js/faker'
+// CLI types
+export type { RunSeedersCliOptions } from './src/cli.js'
 // Main API
-export type { SeederInstance, SeederInstanceConfig } from './src/create-seeder-instance'
-export { createSeederInstance } from './src/create-seeder-instance'
-
+export type {
+	ResolvedContext,
+	SeederInstance,
+	SeederInstanceConfig,
+} from './src/create-seeder-instance.js'
+export { createSeederInstance } from './src/create-seeder-instance.js'
 // Utilities (for advanced use cases)
-export { createDefineSeeder } from './src/define-seeder'
+export { createDefineSeeder } from './src/define-seeder.js'
 export {
 	CircularDependencyError,
 	DuplicateSeederError,
 	MissingDependencyError,
 	resolveDependencyOrder,
 	UnknownSeederError,
-} from './src/dependency-resolver'
-export { colorize, formatDuration } from './src/formatting'
-export { describeTarget, runSeedersCore, SeedTargetError } from './src/run-seeders'
+} from './src/dependency-resolver.js'
+export type { ColorName, StyleName } from './src/formatting.js'
+export { colorize, formatDuration } from './src/formatting.js'
+export { lazyFaker as faker } from './src/lazy-faker.js'
+export type {
+	InternalSeederConfig,
+	SeederScopeHandle,
+	TargetDescription,
+} from './src/run-seeders.js'
+export { describeTarget, runSeedersCore, SeedTargetError } from './src/run-seeders.js'
 
 // Seeding state. Runtime code (job queues, mailers) should import it from 'plantr/state',
 // which does not load faker or bun:test.
-export { isSeedingActive } from './src/seeding-state'
+export { isSeedingActive } from './src/seeding-state.js'
 
 // Step types and cache
-export type { SeederCache, StepFn, StepOptions, StepRecord } from './src/step'
-export { createStepRunner } from './src/step'
+export type {
+	CacheEntry,
+	CacheWrite,
+	SeederCache,
+	StepFn,
+	StepOptions,
+	StepRecord,
+	StepRunner,
+	StepRunnerConfig,
+	StepScope,
+} from './src/step.js'
+export { createStepRunner } from './src/step.js'
 
 // Types
 export type {
 	BaseSeederContext,
+	CompletedSeederResult,
 	DepsFromSeeders,
+	FailedSeederResult,
+	JsonPrimitive,
+	JsonValue,
+	MaybePromise,
+	MissingSeederDeps,
+	PendingSeederResult,
+	Prettify,
 	RunSeedersOptions,
+	RunSeedersResult,
 	Seeder,
 	SeederAny,
 	SeederConfig,
+	SeederDeps,
 	SeederName,
 	SeederOutput,
+	SeederOutputs,
 	SeederResult,
+	SeederResultFor,
 	SeederStatus,
-} from './src/types'
+	SkippedSeederResult,
+	ValidateSeeders,
+} from './src/types.js'

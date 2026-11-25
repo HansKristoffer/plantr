@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'bun:test'
-import { isSeedingActive, setSeedingActive } from './seeding-state'
+import { enterSeeding, exitSeeding, isSeedingActive, setSeedingActive } from './seeding-state.js'
 
 describe('seeding-state', () => {
 	beforeEach(() => {
@@ -28,6 +28,20 @@ describe('seeding-state', () => {
 		expect(isSeedingActive()).toBe(true)
 		expect(isSeedingActive()).toBe(true) // Still true
 		setSeedingActive(false)
+		expect(isSeedingActive()).toBe(false)
+	})
+
+	it('should reference-count overlapping seeding runs', () => {
+		expect(isSeedingActive()).toBe(false)
+		enterSeeding()
+		enterSeeding()
+		expect(isSeedingActive()).toBe(true)
+		exitSeeding()
+		expect(isSeedingActive()).toBe(true) // One run still active
+		exitSeeding()
+		expect(isSeedingActive()).toBe(false)
+		// Extra exit does not underflow
+		exitSeeding()
 		expect(isSeedingActive()).toBe(false)
 	})
 })

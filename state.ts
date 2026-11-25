@@ -8,4 +8,4 @@
  * if (isSeedingActive()) return // skip jobs and mail while seeding
  * ```
  */
-export { isSeedingActive } from './src/seeding-state'
+export { isSeedingActive } from './src/seeding-state.js'

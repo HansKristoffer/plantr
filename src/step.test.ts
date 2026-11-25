@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, mock, spyOn } from 'bun:test'
-import { createStepRunner, type SeederCache } from './step'
+import { createStepRunner, type SeederCache } from './step.js'
+import type { JsonValue } from './types.js'
 
 describe('createStepRunner', () => {
 	beforeEach(() => {
@@ -40,6 +41,21 @@ describe('createStepRunner', () => {
 				}),
 			).rejects.toThrow('Async step failed')
 		})
+
+		it('should preserve the innermost failing step name when steps are nested', async () => {
+			const { step, setSeederName } = createStepRunner()
+			const record = setSeederName('nestedSeeder')
+
+			await expect(
+				step('Outer step', async () => {
+					await step('Inner step', () => {
+						throw new Error('boom')
+					})
+				}),
+			).rejects.toThrow('boom')
+
+			expect(record.failed?.step).toBe('Inner step')
+		})
 	})
 
 	describe('setSeederName', () => {
@@ -65,11 +81,11 @@ describe('createStepRunner', () => {
 		const jsonStore = () => {
 			const store = new Map<string, string>()
 			const cache: SeederCache = {
-				get: async <T>(key: string) => {
+				get: (key) => {
 					const raw = store.get(key)
-					return raw === undefined ? undefined : (JSON.parse(raw) as T)
+					return raw === undefined ? undefined : JSON.parse(raw)
 				},
-				set: async <T>(key: string, value: T) => {
+				set: (key, value) => {
 					store.set(key, JSON.stringify(value))
 				},
 			}
@@ -80,11 +96,15 @@ describe('createStepRunner', () => {
 		const runOnce = async <T>(
 			cache: SeederCache,
 			fn: () => T,
-			options: { version?: unknown; fresh?: boolean } = {},
+			options: { version?: JsonValue; fresh?: boolean; key?: string } = {},
 		) => {
 			const { step, setSeederName } = createStepRunner({ cache })
 			const record = setSeederName('testSeeder', { fresh: options.fresh })
-			const value = await step('Cached step', fn, { useCache: true, version: options.version })
+			const value = await step('Cached step', fn, {
+				useCache: true,
+				version: options.version,
+				key: options.key,
+			})
 			return { value, record }
 		}
 
@@ -100,14 +120,29 @@ describe('createStepRunner', () => {
 			expect(fn).toHaveBeenCalledTimes(1)
 		})
 
-		it('should cache a step that returns undefined', async () => {
+		it('should cache a step that returns undefined or null', async () => {
 			const { cache } = jsonStore()
-			const fn = mock(() => undefined)
+			const fnUndef = mock(() => undefined)
+			await runOnce(cache, fnUndef, { key: 'undef' })
+			expect((await runOnce(cache, fnUndef, { key: 'undef' })).value).toBeUndefined()
+			expect(fnUndef).toHaveBeenCalledTimes(1)
 
-			await runOnce(cache, fn)
-			const second = await runOnce(cache, fn)
+			const fnNull = mock(() => null)
+			await runOnce(cache, fnNull, { key: 'null-val' })
+			expect((await runOnce(cache, fnNull, { key: 'null-val' })).value).toBeNull()
+			expect(fnNull).toHaveBeenCalledTimes(1)
+		})
 
-			expect(second.value).toBeUndefined()
+		it('should treat null returned by cache.get as a cache miss', async () => {
+			const cache: SeederCache = {
+				get: () => null,
+				set: mock(() => {}),
+			}
+			const fn = mock(() => 'fresh-value')
+
+			const result = await runOnce(cache, fn)
+			expect(result.value).toBe('fresh-value')
+			expect(result.record.cachedSteps).toEqual([])
 			expect(fn).toHaveBeenCalledTimes(1)
 		})
 
@@ -117,6 +152,132 @@ describe('createStepRunner', () => {
 			await runOnce(cache, () => 'v1', { version: 1 })
 			expect((await runOnce(cache, () => 'v2', { version: 2 })).value).toBe('v2')
 			expect((await runOnce(cache, () => 'v3', { version: 2 })).value).toBe('v2')
+		})
+
+		it('should compare object versions deterministically regardless of key order', async () => {
+			const { cache } = jsonStore()
+			const fn = mock(() => 'computed')
+
+			await runOnce(cache, fn, { version: { b: 2, a: 1, nested: { y: true, x: false } } })
+			const second = await runOnce(cache, fn, {
+				version: { a: 1, nested: { x: false, y: true }, b: 2 },
+			})
+
+			expect(second.value).toBe('computed')
+			expect(second.record.cachedSteps).toEqual(['Cached step'])
+			expect(fn).toHaveBeenCalledTimes(1)
+		})
+
+		it('should support explicit step cache keys independent of description', async () => {
+			const { store, cache } = jsonStore()
+			const fn = mock(() => 'u1')
+
+			const r1 = createStepRunner({ cache })
+			r1.setSeederName('users')
+			await r1.step('Create admin user', fn, { useCache: true, key: 'admin-user' })
+
+			const r2 = createStepRunner({ cache })
+			r2.setSeederName('users')
+			const val = await r2.step('Create default admin user (reworded)', fn, {
+				useCache: true,
+				key: 'admin-user',
+			})
+
+			expect(val).toBe('u1')
+			expect(fn).toHaveBeenCalledTimes(1)
+			expect([...store.keys()]).toEqual(['users:admin-user'])
+		})
+
+		it('should preload entries once via cache.getAll and avoid per-step cache.get calls', async () => {
+			const get = mock(() => undefined)
+			const store = new Map<string, unknown>([
+				['users:step-a', { __plantr: 1, value: 'a-cached' }],
+				['users:step-b', { __plantr: 1, value: 'b-cached' }],
+			])
+			const getAll = mock(() => store)
+			const set = mock((k: string, v: unknown) => {
+				store.set(k, v)
+			})
+			const cache: SeederCache = { get, set, getAll }
+
+			const runner = createStepRunner({ cache })
+			await runner.preload()
+			const record = runner.setSeederName('users')
+
+			const a = await runner.step('Step A', () => 'a-new', { useCache: true })
+			const b = await runner.step('Step B', () => 'b-new', { useCache: true })
+			const c = await runner.step('Step C', () => 'c-new', { useCache: true })
+
+			expect([a, b, c]).toEqual(['a-cached', 'b-cached', 'c-new'])
+			expect(record.cachedSteps).toEqual(['Step A', 'Step B'])
+			expect(getAll).toHaveBeenCalledTimes(1)
+			expect(get).not.toHaveBeenCalled()
+			expect(set).toHaveBeenCalledTimes(1)
+		})
+
+		it('should buffer writes and flush in a single batch when cache.setMany is provided', async () => {
+			const set = mock(() => {})
+			const flushed: { key: string; value: unknown }[][] = []
+			const setMany = mock((entries: readonly { key: string; value: unknown }[]) => {
+				flushed.push([...entries])
+			})
+			const cache: SeederCache = {
+				get: () => undefined,
+				set,
+				setMany,
+			}
+
+			const runner = createStepRunner({ cache })
+			runner.setSeederName('users')
+
+			await runner.step('Step 1', () => 'one', { useCache: true })
+			await runner.step('Step 2', () => 'two', { useCache: true })
+
+			expect(set).not.toHaveBeenCalled()
+			expect(setMany).not.toHaveBeenCalled()
+
+			await runner.flush()
+
+			expect(setMany).toHaveBeenCalledTimes(1)
+			expect(flushed[0]).toEqual([
+				{ key: 'users:step-1', value: { __plantr: 1, value: 'one' } },
+				{ key: 'users:step-2', value: { __plantr: 1, value: 'two' } },
+			])
+		})
+
+		it('should isolate concurrent step scopes via runWithScope', async () => {
+			const { store, cache } = jsonStore()
+			const runner = createStepRunner({ cache })
+
+			const scopeA = runner.createScope({ seederName: 'seederA', prefix: 'seederA' })
+			const scopeB = runner.createScope({ seederName: 'seederB', prefix: 'seederB' })
+
+			await Promise.all([
+				runner.runWithScope(scopeA, async () => {
+					await runner.step(
+						'Create item',
+						async () => {
+							await Bun.sleep(10)
+							return 'from-a'
+						},
+						{ useCache: true },
+					)
+				}),
+				runner.runWithScope(scopeB, async () => {
+					await runner.step(
+						'Create item',
+						async () => {
+							await Bun.sleep(2)
+							return 'from-b'
+						},
+						{ useCache: true },
+					)
+				}),
+			])
+
+			expect([...store.keys()].sort()).toEqual(['seederA:create-item', 'seederB:create-item'])
+			expect(JSON.parse(store.get('seederA:create-item')!).value).toBe('from-a')
+			expect(JSON.parse(store.get('seederB:create-item')!).value).toBe('from-b')
 		})
 
 		it('should rerun and overwrite when the seeder runs fresh', async () => {
@@ -163,14 +324,18 @@ describe('createStepRunner', () => {
 			expect(cache.set).not.toHaveBeenCalled()
 		})
 
-		it('should warn when useCache is true but no cache configured', async () => {
+		it('should warn once per run when useCache is true but no cache configured', async () => {
 			const consoleSpy = spyOn(console, 'log')
+			consoleSpy.mockClear()
 			const { step } = createStepRunner() // No cache
 
-			await step('Step without cache', () => 'result', { useCache: true })
+			await step('Step without cache 1', () => 'result1', { useCache: true })
+			await step('Step without cache 2', () => 'result2', { useCache: true })
 
-			const calls = consoleSpy.mock.calls.flat()
-			expect(calls.some((c) => String(c).includes('Cache not configured'))).toBe(true)
+			const warnings = consoleSpy.mock.calls
+				.flat()
+				.filter((c) => String(c).includes('Cache not configured'))
+			expect(warnings).toHaveLength(1)
 		})
 
 		it('should print nothing when log is false', async () => {
