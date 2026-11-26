@@ -2,6 +2,9 @@ import { describe, expect, it } from 'bun:test'
 import {
 	type BaseSeederContext,
 	createSeederInstance,
+	type ErrorConstructor,
+	type ExpectFn,
+	type ExpectMatchers,
 	type Seeder,
 	type SeederCache,
 	type SeederDeps,
@@ -223,6 +226,82 @@ describe('TypeScript ergonomics and type safety', () => {
 				await step('bad3', () => 1, { useCache: true, version: () => {} })
 				// @ts-expect-error BigInt is not JSON-serializable
 				await step('bad4', () => 1, { useCache: true, version: 1n })
+			},
+		})
+
+		expect(true).toBe(true)
+	})
+
+	it('types portable ExpectFn and custom expect (bun:test & Vitest-shaped) cleanly', () => {
+		// bun:test expect is assignable to portable ExpectFn
+		const bunAsPortable: ExpectFn = expect
+		void bunAsPortable
+
+		// Passing bun:test expect preserves full bun:test type on ctx.expect
+		const bunInstance = createSeederInstance({
+			expect,
+			context: () => ({ db: true as const }),
+		})
+		const bunSeeder = bunInstance.defineSeeder({
+			name: 'bunSeeder',
+			run: ({ expect: exp, db }) => {
+				assertType<Equal<typeof exp, typeof expect>>()
+				exp(db).toBe(true)
+				return db
+			},
+		})
+		void bunSeeder
+
+		// Vitest-shaped custom expect preserves its extra matchers and accepts shared seeders
+		interface VitestAssertion<T = unknown> extends ExpectMatchers<T> {
+			readonly not: VitestAssertion<unknown>
+			toMatchObject(expected: Record<string, unknown>): void
+			toThrow(expected?: string | RegExp | Error | ErrorConstructor): void
+		}
+		interface VitestExpect {
+			<T = unknown>(actual: T, message?: string): VitestAssertion<T>
+			any(ctor: ErrorConstructor): unknown
+		}
+		const fakeVitestExpect = (() => ({}) as VitestAssertion) as unknown as VitestExpect
+		const vitestAsPortable: ExpectFn = fakeVitestExpect
+		void vitestAsPortable
+
+		const baseInst = createSeederInstance()
+		const shared = baseInst.defineSeeder({
+			name: 'shared',
+			run: ({ expect: exp }) => {
+				assertType<Equal<typeof exp, ExpectFn>>()
+				exp(1).toBe(1)
+				exp(1).not.toBe(2)
+				return 'ok'
+			},
+		})
+
+		const vitestInst = createSeederInstance({
+			expect: fakeVitestExpect,
+			context: (_base) => {
+				assertType<Equal<typeof _base.expect, VitestExpect>>()
+				return { client: 'firestore' as const }
+			},
+		})
+		const vitestSeeder = vitestInst.defineSeeder({
+			name: 'vitestSeeder',
+			dependsOn: [shared],
+			run: ({ expect: exp, client }, deps) => {
+				assertType<Equal<typeof exp, VitestExpect>>()
+				exp({ client, dep: deps.shared }).toMatchObject({ client: 'firestore' })
+				return client
+			},
+		})
+		void (() => vitestInst.runSeeders([shared, vitestSeeder]))
+
+		// Explicit `expect: undefined` keeps default ExpectFn
+		const explicitUndefined = createSeederInstance({ expect: undefined })
+		void explicitUndefined.defineSeeder({
+			name: 'undefExpect',
+			run: ({ expect: exp }) => {
+				assertType<Equal<typeof exp, ExpectFn>>()
+				exp(true).toBeTruthy()
 			},
 		})
 

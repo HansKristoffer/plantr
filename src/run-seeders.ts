@@ -76,23 +76,28 @@ const isLocalHost = (hostPort: string): boolean => {
 	if (hostPort.startsWith('/')) return true // socket directory
 	const lower = hostPort.toLowerCase()
 	const bracketed = /^\[([^\]]*)\]/.exec(lower)
+	const hasPort = bracketed ? /:\d+$/.test(lower.slice(bracketed[0].length)) : /:\d+$/.test(lower)
 	const host = bracketed ? (bracketed[1] ?? '') : lower.replace(/:\d+$/, '')
 	return (
+		host === 'localhost' ||
 		host === '::1' ||
 		host === '0.0.0.0' ||
 		host === 'host.docker.internal' ||
 		host.endsWith('.localhost') ||
 		/^127\./.test(host) ||
-		!/[.:]/.test(host)
+		(hasPort && host.length > 0 && !/[.:]/.test(host))
 	)
 }
 
 /**
  * Describe a database URL without its credentials and say whether every host it names
- * is local: loopback, `*.localhost`, `host.docker.internal`, a socket or `file:` path,
- * or a name without a dot (a compose service). A `host=` parameter overrides the
- * URL's host, as libpq does. Hand-parsed so driver formats `URL` rejects still work
- * (several hosts, `sqlserver://host;key=value`, sockets with credentials).
+ * is local: loopback (`localhost`, `127.*`, `::1`, `0.0.0.0`), `*.localhost`,
+ * `host.docker.internal`, a socket or `file:` path, or a single-label hostname with an
+ * explicit port (such as a compose service like `postgres:5432`). A bare name without a
+ * port (such as a cloud project URL like `firestore://my-prod-project`) is treated as
+ * remote. A `host=` parameter overrides the URL's host, as libpq does. Hand-parsed so
+ * driver formats `URL` rejects still work (several hosts, `sqlserver://host;key=value`,
+ * sockets with credentials).
  */
 export function describeTarget(target: string): TargetDescription {
 	if (/^file:/i.test(target)) return { label: target.replace(/[?#].*$/, ''), local: true }
@@ -105,7 +110,9 @@ export function describeTarget(target: string): TargetDescription {
 	const query = queryStart === -1 ? '' : rest.slice(queryStart)
 	// Drop credentials: everything up to the last @ before the query
 	const authorityAndPath = beforeQuery.slice(beforeQuery.lastIndexOf('@') + 1)
-	const [authority = '', path = ''] = authorityAndPath.split(/(?=[/;])/, 2)
+	const pathStart = authorityAndPath.search(/[/;]/)
+	const authority = pathStart === -1 ? authorityAndPath : authorityAndPath.slice(0, pathStart)
+	const path = pathStart === -1 ? '' : authorityAndPath.slice(pathStart)
 	let hosts = authority.split(',').filter(Boolean)
 	const hostParam = /[?&;]host=([^&;#]*)/i.exec(`${query}${path.startsWith(';') ? path : ''}`)?.[1]
 	if (hostParam) {
@@ -116,7 +123,9 @@ export function describeTarget(target: string): TargetDescription {
 		}
 	}
 
-	const label = `${hosts.join(',') || 'local socket'}${path.startsWith('/') ? path : ''}`
+	const pathWithoutParams = path.startsWith('/') ? (path.split(';', 1)[0] ?? '') : ''
+	const pathLabel = pathWithoutParams.length > 1 ? pathWithoutParams : ''
+	const label = `${hosts.join(',') || 'local socket'}${pathLabel}`
 	return { label, local: hosts.every(isLocalHost) }
 }
 

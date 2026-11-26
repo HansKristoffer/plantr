@@ -137,6 +137,41 @@ describe('integration', () => {
 			expect(result).toBe('legacy value')
 		})
 
+		it('should support a custom expect implementation passed via config', async () => {
+			const calls: unknown[] = []
+			const customExpect = <T>(actual: T) => {
+				calls.push(actual)
+				return {
+					toBe: (expected: T) => {
+						if (actual !== expected) throw new Error(`Expected ${actual} to be ${expected}`)
+					},
+					customMatcher: () => true,
+				}
+			}
+
+			let baseExpectMatches = false
+			const { defineSeeder, runSeeders } = createSeederInstance({
+				expect: customExpect,
+				context: (base) => {
+					baseExpectMatches = base.expect === customExpect
+					return { ok: true }
+				},
+			})
+
+			const seeder = defineSeeder({
+				name: 'customExpectSeeder',
+				run: ({ expect: exp }) => {
+					exp('hello').toBe('hello')
+					return exp('hello').customMatcher()
+				},
+			})
+
+			const run = await runSeeders([seeder], { printResults: false, verbose: false })
+			expect(run.success).toBe(true)
+			expect(baseExpectMatches).toBe(true)
+			expect(calls).toEqual(['hello', 'hello'])
+		})
+
 		it('should support a custom faker locale instance', async () => {
 			const { defineSeeder, runSeeders } = createSeederInstance({
 				faker: fakerDE,
@@ -834,6 +869,106 @@ describe('integration', () => {
 			expect(describeTarget('jdbc:postgresql://prod.example.com/db').local).toBe(false)
 			expect(describeTarget('prod.example.com:5432/db').local).toBe(false)
 			expect(describeTarget('file:./dev.db').local).toBe(true)
+		})
+
+		it('should accept loopback non-SQL emulator URLs and refuse cloud project or scheme-less targets', async () => {
+			// Local emulator URLs
+			expect(describeTarget('http://127.0.0.1:8080')).toEqual({
+				label: '127.0.0.1:8080',
+				local: true,
+			})
+			expect(describeTarget('http://localhost:8080')).toEqual({
+				label: 'localhost:8080',
+				local: true,
+			})
+			expect(describeTarget('http://127.0.0.1:8080/')).toEqual({
+				label: '127.0.0.1:8080',
+				local: true,
+			})
+			expect(describeTarget('firestore://127.0.0.1:8080/demo-kanpla')).toEqual({
+				label: '127.0.0.1:8080/demo-kanpla',
+				local: true,
+			})
+			expect(describeTarget('firestore://localhost:8080/demo-kanpla')).toEqual({
+				label: 'localhost:8080/demo-kanpla',
+				local: true,
+			})
+
+			// Remote / cloud / scheme-less targets
+			expect(describeTarget('https://firestore.googleapis.com')).toEqual({
+				label: 'firestore.googleapis.com',
+				local: false,
+			})
+			expect(describeTarget('firestore://kanpla-87be3')).toEqual({
+				label: 'kanpla-87be3',
+				local: false,
+			})
+			expect(describeTarget('firestore://kanpla-87be3/databases/(default)')).toEqual({
+				label: 'kanpla-87be3/databases/(default)',
+				local: false,
+			})
+			expect(describeTarget('kanpla-87be3')).toEqual({
+				label: 'a target that is not a URL',
+				local: false,
+			})
+			expect(describeTarget('127.0.0.1:8080')).toEqual({
+				label: 'a target that is not a URL',
+				local: false,
+			})
+
+			// Verify banner and execution for local emulator target
+			const log = spyOn(console, 'log')
+			for (const [url, expectedLabel] of [
+				['http://127.0.0.1:8080', '127.0.0.1:8080'],
+				['http://localhost:8080', 'localhost:8080'],
+				['firestore://127.0.0.1:8080/demo-kanpla', '127.0.0.1:8080/demo-kanpla'],
+			] as const) {
+				log.mockClear()
+				const { defineSeeder, runSeeders } = createSeederInstance({ target: () => url })
+				const seed = defineSeeder({ name: 'emulatorSeed', run: () => 'ok' })
+				const run = await runSeeders([seed], { verbose: true, printResults: false })
+				expect(run.success).toBe(true)
+				const banner = log.mock.calls.flat().map(String).join('\n')
+				expect(banner).toContain(`→ ${expectedLabel}`)
+				expect(banner).not.toContain('(remote')
+			}
+
+			// Verify remote / scheme-less targets are refused unless allowRemote / --allow-remote is passed
+			for (const remoteUrl of [
+				'https://firestore.googleapis.com',
+				'firestore://kanpla-87be3',
+				'kanpla-87be3',
+			]) {
+				const { defineSeeder, runSeeders } = createSeederInstance({ target: () => remoteUrl })
+				const seed = defineSeeder({ name: 'remoteSeed', run: () => 'ok' })
+
+				await expect(runSeeders([seed], { verbose: false, printResults: false })).rejects.toThrow(
+					SeedTargetError,
+				)
+
+				const allowed = await runSeeders([seed], {
+					verbose: false,
+					printResults: false,
+					allowRemote: true,
+				})
+				expect(allowed.success).toBe(true)
+
+				// Also verify CLI --allow-remote behavior
+				expect(
+					await runCli([seed], (s, opts) => runSeeders(s as [typeof seed], opts as never), {
+						name: 'Test',
+						argv: [],
+						target: () => remoteUrl,
+					}),
+				).toBe(1)
+				expect(
+					await runCli([seed], (s, opts) => runSeeders(s as [typeof seed], opts as never), {
+						name: 'Test',
+						argv: ['--allow-remote', '--quiet'],
+						target: () => remoteUrl,
+					}),
+				).toBe(0)
+			}
 		})
 
 		it('should respect NO_COLOR in colorize', () => {

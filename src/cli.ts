@@ -1,6 +1,6 @@
 import { parseArgs } from 'node:util'
 import { resolveDependencyOrder } from './dependency-resolver.js'
-import { colorize } from './formatting.js'
+import { colorize, inspectValue } from './formatting.js'
 import { describeTarget } from './run-seeders.js'
 import type { RunSeedersOptions, SeederAny } from './types.js'
 
@@ -226,7 +226,7 @@ export async function runCli(
 		return success ? 0 : 1
 	} catch (error) {
 		const usage = error instanceof Error && USAGE_ERRORS.has(error.name)
-		console.error(colorize(usage ? (error as Error).message : Bun.inspect(error), 'red'))
+		console.error(colorize(usage ? (error as Error).message : inspectValue(error), 'red'))
 		return 1
 	}
 }

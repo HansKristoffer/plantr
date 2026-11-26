@@ -15,6 +15,7 @@
 	"author": "Kristoffer Hansen",
 	"keywords": [
 		"bun",
+		"node",
 		"seeder",
 		"database",
 		"faker",
@@ -25,7 +26,8 @@
 		"dependency-injection"
 	],
 	"engines": {
-		"bun": ">=1.0.0"
+		"bun": ">=1.0.0",
+		"node": ">=22.0.0"
 	},
 	"files": [
 		"index.ts",
