@@ -29,6 +29,7 @@ plantr/
     ├── step.ts                    # Step runner with versioned cache envelope, getAll/setMany batching
     ├── expect.ts                  # Portable ExpectFn types, dynamic bun:test loader, node:assert/strict fallback
     ├── lazy-faker.ts              # Lazy-loaded English faker proxy (defers locale load until first access)
+    ├── map-with-limit.ts          # mapWithLimit: ordered results, bounded concurrency, fail-fast
     ├── seeding-state.ts           # Seeding flag on globalThis (shared by both entry points)
     ├── signals.ts                 # One SIGINT/SIGTERM listener shared by active runs: tear down, then exit
     └── formatting.ts              # Output formatting and runtime-safe inspectValue helper

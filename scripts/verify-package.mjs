@@ -111,6 +111,7 @@ import {
 	expect,
 	faker,
 	isSeedUsageError,
+	mapWithLimit,
 	SeedTargetError,
 	SeedUsageError,
 } from 'plantr'
@@ -321,6 +322,23 @@ const stepRun1 = await stepInst.runSeeders([stepSeed], { verbose: false, printRe
 const stepRun2 = await stepInst.runSeeders([stepSeed], { verbose: false, printResults: false })
 assert.deepEqual(stepRun2.outputs, stepRun1.outputs)
 assert.deepEqual(stepRun2.results[0].cachedSteps, ['Cached'])
+
+// mapWithLimit keeps order, bounds calls in flight, and fails fast
+let mapInFlight = 0
+let mapPeak = 0
+const mapped = await mapWithLimit([3, 0, 2, 1], 2, async (delay, index) => {
+	mapInFlight++
+	mapPeak = Math.max(mapPeak, mapInFlight)
+	await new Promise((resolve) => setTimeout(resolve, delay))
+	mapInFlight--
+	return index
+})
+assert.deepEqual(mapped, [0, 1, 2, 3])
+assert.equal(mapPeak, 2)
+await assert.rejects(
+	() => mapWithLimit([1, 2, 3], 1, (item) => { if (item === 2) throw new Error('map failed'); return item }),
+	/map failed/,
+)
 
 console.log('Verified plantr smoke test on Node.js ' + process.version)
 `,

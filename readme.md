@@ -9,7 +9,7 @@ A TypeScript database seeder library for **Bun and Node.js (>= 22)** with built-
 - **End-to-end TypeScript** - Zero-boilerplate context inference, context-safe seeder registries, typed dependencies, typed `outputs`, discriminated-union `results`, compile-time missing dependency checks, and autocompleted `only`/`fresh`
 - **Automatic ordering & parallel DAG execution** - Runs in dependency order with critical-path scheduling across independent branches via `concurrency` / `--concurrency`
 - **Run a subset** - Run named seeders plus what they depend on (`--only`, `only`)
-- **Step workflow** - Organize seeders into sequential or `Promise.all` parallel steps with progress logging
+- **Step workflow** - Organize seeders into sequential or `Promise.all` parallel steps with progress logging, and `mapWithLimit` for thousands of API calls a few at a time
 - **Step caching** - Skip steps that already ran, with explicit keys, canonical JSON versions, single-query `getAll` preloading, batched `setMany` writes, and a `--fresh` override
 - **Target guard** - Refuse to seed a database or emulator target that is not local unless asked to
 - **Setup and teardown** - `setup()` returns the run's resources (a connection, a signed-in client) for the context factory, and `teardown(resources)` always runs: after a failure, when the context factory throws, and on SIGINT or SIGTERM
@@ -330,6 +330,22 @@ run: async ({ step }) => {
   })
 }
 ```
+
+### `mapWithLimit(items, limit, fn)`
+
+Runs `fn(item, index)` over `items` (any iterable) with at most `limit` calls in flight, for example thousands of API calls eight at a time, and resolves to the results in the order of `items`, whatever order the calls finish in. `limit` is a positive integer or `Infinity`; anything else throws `RangeError`.
+
+```typescript
+import { mapWithLimit } from 'plantr'
+
+await step('Create products', () =>
+  mapWithLimit(products, 8, (product) => api.post('/products', product)),
+)
+```
+
+It fails fast: once a call throws or rejects, no further item starts, and it rejects with that first error after the calls already in flight have settled. Nothing it started is still running when the step fails and the run tears down.
+
+Calls in one step share its faker, and later items start as earlier ones finish, so faker draws inside `fn` come out in a different order on each run. Build the items with faker first and keep `fn` to sending them.
 
 ## Step Caching
 

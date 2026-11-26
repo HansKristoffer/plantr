@@ -68,6 +68,7 @@ export { expect } from './src/expect.js'
 export type { ColorName, StyleName } from './src/formatting.js'
 export { colorize, formatDuration } from './src/formatting.js'
 export { lazyFaker as faker } from './src/lazy-faker.js'
+export { mapWithLimit } from './src/map-with-limit.js'
 export type {
 	FreshRun,
 	InternalSeederConfig,
