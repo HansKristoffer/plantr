@@ -1,4 +1,5 @@
 import { inspect as nodeInspect } from 'node:util'
+import { isSeedUsageError } from './errors.js'
 import type { SeederResult } from './types.js'
 
 type BunInspectGlobal = {
@@ -154,7 +155,9 @@ export function printErrors(results: readonly SeederResult[]): void {
 	for (const result of failed) {
 		const where = result.failedStep ? ` in step "${result.failedStep}"` : ''
 		console.log(colorize(`❌ Seeder "${result.name}" failed${where}:`, 'red'))
-		const details = inspectValue(result.error, { colors: supportsColor() })
+		const details = isSeedUsageError(result.error)
+			? result.error.message
+			: inspectValue(result.error, { colors: supportsColor() })
 		for (const line of details.split('\n')) console.log(`   ${line}`)
 		if (result.cachedSteps.length > 0) {
 			console.log(
@@ -181,7 +184,10 @@ export function printErrors(results: readonly SeederResult[]): void {
 export function printCleanupErrors(errors: readonly unknown[]): void {
 	for (const error of errors) {
 		console.error(colorize('Cleanup after the run also failed:', 'red'))
-		for (const line of inspectValue(error, { colors: supportsColor() }).split('\n')) {
+		const details = isSeedUsageError(error)
+			? error.message
+			: inspectValue(error, { colors: supportsColor() })
+		for (const line of details.split('\n')) {
 			console.error(`   ${line}`)
 		}
 	}

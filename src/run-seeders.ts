@@ -1,4 +1,5 @@
 import { resolveDependencyOrder, UnknownSeederError } from './dependency-resolver.js'
+import { SeedUsageError } from './errors.js'
 import {
 	printCleanupErrors,
 	printConcurrentComplete,
@@ -98,7 +99,7 @@ export type InternalSeederConfig<TContext, TResources = undefined> = {
 /**
  * Error thrown when a run would write to a database that is not local
  */
-export class SeedTargetError extends Error {
+export class SeedTargetError extends SeedUsageError {
 	constructor(label: string) {
 		super(
 			`Refusing to seed ${label}: it is not a local database. Pass allowRemote (CLI: --allow-remote) to seed it on purpose.`,

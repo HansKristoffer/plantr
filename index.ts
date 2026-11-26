@@ -57,6 +57,7 @@ export {
 	resolveDependencyOrder,
 	UnknownSeederError,
 } from './src/dependency-resolver.js'
+export { isSeedUsageError, SeedUsageError, usageErrorSymbol } from './src/errors.js'
 export type {
 	AnyExpectFn,
 	ErrorConstructor,

@@ -1,5 +1,6 @@
 import { parseArgs } from 'node:util'
 import { resolveDependencyOrder } from './dependency-resolver.js'
+import { isSeedUsageError } from './errors.js'
 import { colorize, inspectValue } from './formatting.js'
 import { describeTarget } from './run-seeders.js'
 import type { RunSeedersOptions, SeederAny } from './types.js'
@@ -16,15 +17,6 @@ type CliRunner = (
 	seeders: readonly SeederAny[],
 	options?: RunSeedersOptions,
 ) => Promise<{ success: boolean }>
-
-/** Errors whose message says everything; others are printed with their stack */
-const USAGE_ERRORS = new Set([
-	'CircularDependencyError',
-	'MissingDependencyError',
-	'DuplicateSeederError',
-	'UnknownSeederError',
-	'SeedTargetError',
-])
 
 function formatSeedersList(seeders: readonly SeederAny[]): string {
 	if (seeders.length === 0) return 'No seeders registered.'
@@ -226,8 +218,8 @@ export async function runCli(
 		})
 		return success ? 0 : 1
 	} catch (error) {
-		const usage = error instanceof Error && USAGE_ERRORS.has(error.name)
-		console.error(colorize(usage ? (error as Error).message : inspectValue(error), 'red'))
+		// A usage error's message says everything; others are printed with their stack
+		console.error(colorize(isSeedUsageError(error) ? error.message : inspectValue(error), 'red'))
 		return 1
 	}
 }

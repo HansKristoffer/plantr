@@ -25,6 +25,7 @@ plantr/
     ├── define-seeder.ts           # Seeder definition
     ├── run-seeders.ts             # Core runner, target guard (describeTarget, SeedTargetError)
     ├── dependency-resolver.ts     # Topological sort, `only` selection, registry errors
+    ├── errors.ts                  # SeedUsageError and usageErrorSymbol: the CLI prints the message only
     ├── step.ts                    # Step runner with versioned cache envelope, getAll/setMany batching
     ├── expect.ts                  # Portable ExpectFn types, dynamic bun:test loader, node:assert/strict fallback
     ├── lazy-faker.ts              # Lazy-loaded English faker proxy (defers locale load until first access)

@@ -105,7 +105,15 @@ try {
 		writeFileSync(
 			nodeSmokeFile,
 			`import assert from 'node:assert/strict'
-import { createSeederInstance, describeTarget, expect, faker, SeedTargetError } from 'plantr'
+import {
+	createSeederInstance,
+	describeTarget,
+	expect,
+	faker,
+	isSeedUsageError,
+	SeedTargetError,
+	SeedUsageError,
+} from 'plantr'
 import { isSeedingActive } from 'plantr/state'
 
 // Top-level runtime-safe expect + lazy faker
@@ -250,6 +258,9 @@ await assert.rejects(
 	() => remoteInst.runSeeders([noop], { verbose: false, printResults: false }),
 	SeedTargetError,
 )
+assert.ok(new SeedTargetError('x') instanceof SeedUsageError)
+assert.ok(isSeedUsageError(new SeedUsageError('refused')))
+assert.ok(isSeedUsageError(Object.assign(new Error('refused'), { [Symbol.for('plantr.usageError')]: true })))
 const allowed = await remoteInst.runSeeders([noop], {
 	verbose: false,
 	printResults: false,

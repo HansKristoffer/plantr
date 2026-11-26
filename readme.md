@@ -379,7 +379,7 @@ createSeederInstance({
   setup: async () => ({ db: await connectEmulator() }),
   onFresh: async ({ resources: { db }, seeders, all }) => {
     if (!all) {
-      throw new Error(`Run --fresh without seeder names to reset the emulator (asked: ${seeders.join(', ')})`)
+      throw new SeedUsageError(`Run --fresh without seeder names to reset the emulator (asked: ${seeders.join(', ')})`)
     }
     await db.wipe()
   },
@@ -413,7 +413,7 @@ Each step's function then gets its own faker, seeded from `fakerSeed`, the seede
 
 Set `target` to the database or emulator URL the instance writes to (for example `process.env.DATABASE_URL`, `http://127.0.0.1:8080`, or `firestore://127.0.0.1:8080/demo-app`). The banner then shows its host and path, never credentials (`🌱 Running Seeders (2 seeders) → localhost:5432/app`), and a run refuses with `SeedTargetError` before `onBeforeAll` when the target is not local. Local means every host the URL names (several hosts, or a `host=` parameter, which overrides the URL's host) is loopback (`localhost`, `127.*`, `::1`, `0.0.0.0`), `*.localhost`, `host.docker.internal`, a socket directory or `file:` path, or a single-label hostname with an explicit port such as a compose service (`postgres:5432`). A bare name without a port (such as a cloud project URL like `firestore://my-prod-project`) or a target without a `scheme://` is refused. Seed anything else on purpose with `allowRemote: true` or `--allow-remote`, for example in a staging pre-deploy command.
 
-Without `target` there is no check. For other rules (an environment variable, a list of allowed hosts), throw from `onBeforeAll`.
+Without `target` there is no check. For other rules (an environment variable, a list of allowed hosts), throw a `SeedUsageError` from `setup` before it connects; the CLI prints its message without a stack trace.
 
 ## Seeding State
 
@@ -437,8 +437,10 @@ The flag is set after validation succeeds and cleared when the run finishes, als
 import {
   CircularDependencyError,
   DuplicateSeederError,
+  isSeedUsageError,
   MissingDependencyError,
   SeedTargetError,
+  SeedUsageError,
   UnknownSeederError,
 } from 'plantr'
 
@@ -456,6 +458,19 @@ try {
   if (error instanceof SeedTargetError) console.error(error.message)
 }
 ```
+
+### Usage errors
+
+Throw `SeedUsageError` for a problem the person running the seed fixes by changing how they run it: a refused target, a missing environment variable, a bad option. `runSeedersCli` prints only its message, in red, and exits 1; a seeder that fails with one is reported by its message, without a stack trace. Every other error keeps its stack.
+
+```typescript
+setup: async () => {
+  if (!process.env.SEED_ADMIN_URL) throw new SeedUsageError('Set SEED_ADMIN_URL to the Admin these emulators serve')
+  return { db: await connect() }
+},
+```
+
+plantr's own validation errors (`SeedTargetError`, `UnknownSeederError`, `DuplicateSeederError`, `MissingDependencyError`, `CircularDependencyError`) extend `SeedUsageError`. To mark an error class of your own without extending it, set the registered symbol `usageErrorSymbol` (`Symbol.for('plantr.usageError')`) to `true` on it; `isSeedUsageError(error)` checks for either.
 
 When a seeder fails, the summary names the failing step and prints the whole error (`Bun.inspect` on Bun or `util.inspect` on Node.js: message, stack, `cause` and extra fields). Under GitHub Actions it also prints an `::error` annotation. Terminal colors respect `NO_COLOR`, `FORCE_COLOR`, and stdout TTY state.
 
