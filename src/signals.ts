@@ -52,6 +52,3 @@ export function onTerminationSignal(cleanup: Cleanup): () => void {
 		}
 	}
 }
-
-/** Whether a termination signal arrived while a run was registered */
-export const terminationSignalReceived = (): boolean => received !== undefined

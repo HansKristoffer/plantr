@@ -76,9 +76,9 @@ export type InternalSeederConfig<TContext, TResources = undefined> = {
 	prepare?: ((resources: TResources) => MaybePromise<void>) | undefined
 	/** Called after prepare and before the cache preload when at least one seeder of the run is fresh */
 	onFresh?: ((run: FreshRun<TResources>) => MaybePromise<void>) | undefined
-	/** Called once after setup to preload step cache entries (when cache.getAll is configured) */
+	/** Called once after setup and onFresh to preload step cache entries */
 	preloadCache?: (() => MaybePromise<void>) | undefined
-	/** Called once before onAfterAll to flush buffered step cache writes (when cache.setMany is configured) */
+	/** Called once before onAfterAll to flush buffered step cache writes */
 	flushCache?: (() => MaybePromise<void>) | undefined
 	/** Called before each seeder runs (legacy sequential hook); may return the record its steps fill */
 	beforeSeeder?: ((name: string, options: { fresh: boolean }) => StepRecord | undefined) | undefined

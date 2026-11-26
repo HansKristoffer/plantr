@@ -43,15 +43,11 @@ describe('fakerSeedScope', () => {
 		const ran = await runSeeders([seeder], quiet)
 		const replayed = await runSeeders([seeder], quiet)
 
-		expect(replayed.success && replayed.results[0]?.status === 'completed').toBe(true)
-		if (replayed.results[0]?.status === 'completed') {
-			expect(replayed.results[0].cachedSteps).toEqual(['Create owner'])
-		}
-		expect(ran.success && replayed.success).toBe(true)
-		if (ran.success && replayed.success) {
-			expect(replayed.outputs.people).toEqual(ran.outputs.people)
-			expect(new Set(Object.values(ran.outputs.people)).size).toBe(3)
-		}
+		if (!ran.success || replayed.results[0]?.status !== 'completed') throw new Error('run failed')
+
+		expect(replayed.results[0].cachedSteps).toEqual(['Create owner'])
+		expect(replayed.results[0].output).toEqual(ran.outputs.people)
+		expect(new Set(Object.values(ran.outputs.people)).size).toBe(3)
 	})
 
 	it("'seeder' (the default) keeps 2.2 behaviour: a cached step shifts later draws", async () => {

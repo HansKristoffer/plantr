@@ -1,7 +1,6 @@
 import { parseArgs } from 'node:util'
 import { resolveDependencyOrder } from './dependency-resolver.js'
-import { isSeedUsageError } from './errors.js'
-import { colorize, inspectValue } from './formatting.js'
+import { colorize, formatError } from './formatting.js'
 import { describeTarget } from './run-seeders.js'
 import type { RunSeedersOptions, SeederAny } from './types.js'
 
@@ -218,8 +217,7 @@ export async function runCli(
 		})
 		return success ? 0 : 1
 	} catch (error) {
-		// A usage error's message says everything; others are printed with their stack
-		console.error(colorize(isSeedUsageError(error) ? error.message : inspectValue(error), 'red'))
+		console.error(colorize(formatError(error), 'red'))
 		return 1
 	}
 }

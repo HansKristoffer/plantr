@@ -21,6 +21,14 @@ export function inspectValue(value: unknown, options?: { colors?: boolean }): st
 }
 
 /**
+ * An error as the person running the seed should see it: a usage error by its message
+ * alone, anything else in full (message, stack, `cause` and extra fields).
+ */
+export function formatError(error: unknown, options?: { colors?: boolean }): string {
+	return isSeedUsageError(error) ? error.message : inspectValue(error, options)
+}
+
+/**
  * ANSI color codes for terminal output
  */
 const colors = {
@@ -155,9 +163,7 @@ export function printErrors(results: readonly SeederResult[]): void {
 	for (const result of failed) {
 		const where = result.failedStep ? ` in step "${result.failedStep}"` : ''
 		console.log(colorize(`❌ Seeder "${result.name}" failed${where}:`, 'red'))
-		const details = isSeedUsageError(result.error)
-			? result.error.message
-			: inspectValue(result.error, { colors: supportsColor() })
+		const details = formatError(result.error, { colors: supportsColor() })
 		for (const line of details.split('\n')) console.log(`   ${line}`)
 		if (result.cachedSteps.length > 0) {
 			console.log(
@@ -184,10 +190,7 @@ export function printErrors(results: readonly SeederResult[]): void {
 export function printCleanupErrors(errors: readonly unknown[]): void {
 	for (const error of errors) {
 		console.error(colorize('Cleanup after the run also failed:', 'red'))
-		const details = isSeedUsageError(error)
-			? error.message
-			: inspectValue(error, { colors: supportsColor() })
-		for (const line of details.split('\n')) {
+		for (const line of formatError(error, { colors: supportsColor() }).split('\n')) {
 			console.error(`   ${line}`)
 		}
 	}
