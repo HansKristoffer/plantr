@@ -4,6 +4,7 @@
 		"includes": [
 			"**",
 			"!!**/dist",
+			"!.artifacts",
 			"!bun.lock",
 			"!tsconfig.tsbuildinfo",
 			"!.release-please-manifest.json"
