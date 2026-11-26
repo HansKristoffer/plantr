@@ -4,9 +4,9 @@ import { type RunSeedersCliOptions, runCli } from './cli.js'
 import { createDefineSeeder } from './define-seeder.js'
 import { type AnyExpectFn, type ExpectFn, getDefaultExpect } from './expect.js'
 import { getDefaultFaker, lazyFaker } from './lazy-faker.js'
-import { runSeedersCore } from './run-seeders.js'
+import { type FreshRun, runSeedersCore, type SetupHelpers } from './run-seeders.js'
 import { isSeedingActive } from './seeding-state.js'
-import { createStepRunner, type SeederCache } from './step.js'
+import { createStepRunner, type SeederCache, type StepRunner } from './step.js'
 import type {
 	BaseSeederContext,
 	MaybePromise,
@@ -44,20 +44,51 @@ export type ResolvedContext<
 export type SeederInstanceConfig<
 	TExtra extends object = Record<never, never>,
 	TExpect extends AnyExpectFn | undefined = ExpectFn,
+	TResources = undefined,
 > = {
+	/**
+	 * Optional: acquire what the run needs (a database connection, an authenticated client)
+	 * and return it. Runs once per run, after the target guard, before the cache and the
+	 * context factory, which both receive the returned resources. Throw to refuse the run.
+	 *
+	 * Register the cleanup for each resource with `defer` right after acquiring it when
+	 * `setup` acquires several: if `setup` throws later, the deferred cleanups still run
+	 * (last registered first), while `teardown` does not, as there are no resources to pass it.
+	 *
+	 * @example
+	 * ```typescript
+	 * setup: async () => {
+	 *   const db = await connect(process.env.DATABASE_URL)
+	 *   return { db }
+	 * },
+	 * teardown: ({ db }) => db.close(),
+	 * ```
+	 */
+	setup?: ((helpers: SetupHelpers) => MaybePromise<TResources>) | undefined
+
+	/**
+	 * Optional: release what `setup` returned. Runs once whenever `setup` returned: after
+	 * the seeders (also when one fails), when the cache or context factory throws, and on
+	 * SIGINT or SIGTERM before the process exits. Deferred cleanups run after it.
+	 */
+	teardown?: ((resources: NoInfer<TResources>) => MaybePromise<void>) | undefined
+
 	/**
 	 * Optional factory function that extends the base context (`faker`, `step`, `expect`).
 	 * Returned properties are merged onto `base` automatically — no need to spread `...base`,
 	 * though spreading or overriding keys (such as `faker`) also works.
-	 * Called once per run, after `onBeforeAll`.
+	 * Called once per run, after `setup`, with the resources it returned.
 	 *
 	 * @example
 	 * ```typescript
-	 * context: () => ({ prisma })
+	 * context: (base, { db }) => ({ db })
 	 * ```
 	 */
 	context?:
-		| ((base: NoInfer<BaseSeederContext<ResolvedExpect<TExpect>>>) => MaybePromise<TExtra>)
+		| ((
+				base: NoInfer<BaseSeederContext<ResolvedExpect<TExpect>>>,
+				resources: NoInfer<TResources>,
+		  ) => MaybePromise<TExtra>)
 		| undefined
 
 	/**
@@ -69,7 +100,10 @@ export type SeederInstanceConfig<
 
 	/**
 	 * Optional cache for step caching.
-	 * Provide `get` / `set` (and optionally `getAll` for single-query preloading).
+	 * Provide `get` / `set` (and optionally `getAll` for single-query preloading), or a
+	 * function that builds the cache from the resources `setup` returned. The function runs
+	 * once per run, after `setup` and before the cache preload; return `undefined` to run
+	 * without a cache.
 	 *
 	 * @example
 	 * ```typescript
@@ -80,9 +114,32 @@ export type SeederInstanceConfig<
 	 *     await prisma.seedCache.upsert({ where: { key }, create: { key, output }, update: { output } })
 	 *   },
 	 * }
+	 * // or, from setup's resources:
+	 * cache: ({ db }) => db.seedCache,
 	 * ```
 	 */
-	cache?: SeederCache | undefined
+	cache?:
+		| SeederCache
+		| ((resources: NoInfer<TResources>) => MaybePromise<SeederCache | undefined>)
+		| undefined
+
+	/**
+	 * Optional: reset the target before a fresh run (CLI `--fresh`, or the `fresh` option),
+	 * for example wipe a local emulator, so steps that create records with ids the target
+	 * chooses do not create them a second time. Runs after `setup` and the cache factory,
+	 * before the cache preload and the context factory, and only when at least one seeder of
+	 * the run is fresh. `all` is true only when every registered seeder runs fresh: with
+	 * `--fresh` plus seeder names, the seeders they depend on still replay their cache, so
+	 * wipe only when `all` is true (or throw to refuse a partial fresh run).
+	 *
+	 * @example
+	 * ```typescript
+	 * onFresh: async ({ resources: { db }, all }) => {
+	 *   if (all) await db.wipe()
+	 * }
+	 * ```
+	 */
+	onFresh?: ((run: FreshRun<NoInfer<TResources>>) => MaybePromise<void>) | undefined
 
 	/**
 	 * Optional: default maximum number of independent seeders to run concurrently (default: 1).
@@ -113,8 +170,25 @@ export type SeederInstanceConfig<
 	fakerSeed?: number | undefined
 
 	/**
-	 * Called before all seeders run, before the context factory.
-	 * Use for setup like connecting to databases, or to refuse a run.
+	 * Optional, with `fakerSeed`: how finely faker is seeded (default: `'seeder'`).
+	 *
+	 * - `'seeder'`: one faker per seeder, seeded from `fakerSeed` and the seeder's name. A
+	 *   cached step skips its function, and with it the faker draws in it, so everything the
+	 *   seeder draws after that step shifts between a cached and an uncached run.
+	 * - `'step'`: each step's function also gets its own faker, seeded from `fakerSeed`, the
+	 *   seeder's name and the step's `key` (or description), plus a counter when a key repeats.
+	 *   Draws inside a step and draws after it are the same whether earlier steps ran or came
+	 *   from the cache, and parallel steps no longer share one sequence.
+	 *
+	 * Switching to `'step'` changes the data steps generate once, which is why it is not the default.
+	 */
+	fakerSeedScope?: 'seeder' | 'step' | undefined
+
+	/**
+	 * Called before all seeders run, before `setup` and the context factory.
+	 *
+	 * @deprecated Use `setup`: throw from it to refuse a run, and return what it connects
+	 * so `teardown`, `context` and a `cache` factory receive it. Still called, before `setup`.
 	 *
 	 * @example
 	 * ```typescript
@@ -128,7 +202,9 @@ export type SeederInstanceConfig<
 	/**
 	 * Called after all seeders complete (success or failure), also when the context
 	 * factory throws. Receives the created context (or `undefined` if the context factory threw).
-	 * Use for cleanup like disconnecting from databases.
+	 *
+	 * @deprecated Use `teardown`, which receives the resources `setup` returned even when
+	 * no context exists. Still called, before `teardown`.
 	 *
 	 * @example
 	 * ```typescript
@@ -268,8 +344,9 @@ type FakerSlot = {
 export function createSeederInstance<
 	TExtra extends object = Record<never, never>,
 	TExpect extends AnyExpectFn | undefined = ExpectFn,
+	TResources = undefined,
 >(
-	config?: SeederInstanceConfig<TExtra, TExpect>,
+	config?: SeederInstanceConfig<TExtra, TExpect, TResources>,
 ): SeederInstance<ResolvedContext<TExtra, TExpect>> {
 	type TContext = ResolvedContext<TExtra, TExpect>
 
@@ -278,6 +355,7 @@ export function createSeederInstance<
 	const resolveBaseFaker = (): Faker => customFaker ?? getDefaultFaker()
 	const customExpect = config?.expect
 	const fakerSeed = config?.fakerSeed
+	const seedPerStep = fakerSeed !== undefined && config?.fakerSeedScope === 'step'
 	const defaultConcurrency = config?.concurrency
 
 	const runInternal = async (
@@ -285,11 +363,13 @@ export function createSeederInstance<
 		options?: RunSeedersOptions,
 		bannerName?: string,
 	) => {
-		// One step runner and faker storage per run, so cache keys, duplicate checks, and scopes are isolated
-		const stepRunner = createStepRunner({
-			cache: config?.cache,
-			log: options?.verbose ?? true,
-		})
+		// One step runner and faker storage per run, so cache keys, duplicate checks, and scopes are
+		// isolated. The runner is built after setup, since the cache may come from its resources.
+		let stepRunner: StepRunner | undefined
+		const requireStepRunner = (): StepRunner => {
+			if (!stepRunner) throw new Error('plantr: the step runner is used before setup finished')
+			return stepRunner
+		}
 		const fakerStorage = new AsyncLocalStorage<FakerSlot>()
 		const resolveActiveFaker = (): Faker => {
 			const slot = fakerStorage.getStore()
@@ -342,21 +422,36 @@ export function createSeederInstance<
 		return runSeedersCore(
 			seeders,
 			{
-				context: async () => {
+				prepare: async (resources) => {
+					const cache =
+						typeof config?.cache === 'function' ? await config.cache(resources) : config?.cache
+					stepRunner = createStepRunner({
+						cache,
+						log: options?.verbose ?? true,
+						aroundStep: seedPerStep
+							? ({ seederName, key, occurrence }, run) => {
+									const name = `${seederName}:${key}${occurrence > 0 ? `#${occurrence}` : ''}`
+									return fakerStorage.run({ name, isolated: true }, run)
+								}
+							: undefined,
+					})
+				},
+				preloadCache: () => stepRunner?.preload(),
+				flushCache: () => stepRunner?.flush(),
+				context: async (resources) => {
 					const base: BaseSeederContext<ResolvedExpect<TExpect>> = {
 						faker: scopedFaker,
-						step: stepRunner.step,
+						step: requireStepRunner().step,
 						expect: (customExpect ?? getDefaultExpect()) as ResolvedExpect<TExpect>,
 					}
 					if (!config?.context) return base as unknown as TContext
-					const extra = await config.context(base)
+					const extra = await config.context(base, resources)
 					return extra === base
 						? (base as unknown as TContext)
 						: ({ ...base, ...extra } as unknown as TContext)
 				},
-				preloadCache: config?.cache?.getAll ? () => stepRunner.preload() : undefined,
-				flushCache: config?.cache?.setMany ? () => stepRunner.flush() : undefined,
 				createSeederScope: ({ name, fresh, concurrent }) => {
+					const stepRunner = requireStepRunner()
 					const stepScope = stepRunner.createScope({
 						seederName: name,
 						fresh,
@@ -375,6 +470,9 @@ export function createSeederInstance<
 				},
 				bannerName,
 				target: config?.target,
+				setup: config?.setup,
+				onFresh: config?.onFresh,
+				teardown: config?.teardown,
 				onBeforeAll: config?.onBeforeAll,
 				onAfterAll: config?.onAfterAll,
 			},

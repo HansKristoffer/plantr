@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import {
 	copyFileSync,
 	existsSync,
@@ -105,7 +105,16 @@ try {
 		writeFileSync(
 			nodeSmokeFile,
 			`import assert from 'node:assert/strict'
-import { createSeederInstance, describeTarget, expect, faker, SeedTargetError } from 'plantr'
+import {
+	createSeederInstance,
+	describeTarget,
+	expect,
+	faker,
+	isSeedUsageError,
+	mapWithLimit,
+	SeedTargetError,
+	SeedUsageError,
+} from 'plantr'
 import { isSeedingActive } from 'plantr/state'
 
 // Top-level runtime-safe expect + lazy faker
@@ -250,12 +259,86 @@ await assert.rejects(
 	() => remoteInst.runSeeders([noop], { verbose: false, printResults: false }),
 	SeedTargetError,
 )
+assert.ok(new SeedTargetError('x') instanceof SeedUsageError)
+assert.ok(isSeedUsageError(new SeedUsageError('refused')))
+assert.ok(isSeedUsageError(Object.assign(new Error('refused'), { [Symbol.for('plantr.usageError')]: true })))
 const allowed = await remoteInst.runSeeders([noop], {
 	verbose: false,
 	printResults: false,
 	allowRemote: true,
 })
 assert.equal(allowed.success, true)
+
+// setup resources reach the cache factory, context factory and teardown, also when a seeder fails
+const lifecycle = []
+const lifecycleInst = createSeederInstance({
+	setup: ({ defer }) => {
+		defer(() => lifecycle.push('deferred'))
+		return { db: 'node-db' }
+	},
+	cache: ({ db }) => {
+		lifecycle.push('cache ' + db)
+		return { get: () => undefined, set: () => {} }
+	},
+	context: (_base, { db }) => ({ db }),
+	teardown: ({ db }) => lifecycle.push('teardown ' + db),
+})
+const lifecycleSeed = lifecycleInst.defineSeeder({
+	name: 'lifecycle',
+	run: ({ db }) => {
+		lifecycle.push('seed ' + db)
+		throw new Error('seeder fails')
+	},
+})
+const lifecycleRun = await lifecycleInst.runSeeders([lifecycleSeed], { verbose: false, printResults: false })
+assert.equal(lifecycleRun.success, false)
+assert.deepEqual(lifecycle, ['cache node-db', 'seed node-db', 'teardown node-db', 'deferred'])
+
+// --fresh runs onFresh with setup's resources before seeding
+const freshRuns = []
+const freshInst = createSeederInstance({
+	setup: () => 'node-emulator',
+	onFresh: ({ resources, seeders, all }) => freshRuns.push({ resources, seeders, all }),
+})
+const freshSeed = freshInst.defineSeeder({ name: 'fresh', run: () => 1 })
+await freshInst.runSeeders([freshSeed], { verbose: false, printResults: false, fresh: true })
+assert.deepEqual(freshRuns, [{ resources: 'node-emulator', seeders: ['fresh'], all: true }])
+
+// fakerSeedScope: 'step' keeps draws after a cached step stable
+const stepStore = new Map()
+const stepInst = createSeederInstance({
+	fakerSeed: 1,
+	fakerSeedScope: 'step',
+	cache: { get: (key) => stepStore.get(key), set: (key, value) => { stepStore.set(key, value) } },
+})
+const stepSeed = stepInst.defineSeeder({
+	name: 'steps',
+	run: async ({ faker: f, step }) => {
+		const cached = await step('Cached', () => f.person.fullName(), { useCache: true })
+		return { cached, after: f.person.fullName() }
+	},
+})
+const stepRun1 = await stepInst.runSeeders([stepSeed], { verbose: false, printResults: false })
+const stepRun2 = await stepInst.runSeeders([stepSeed], { verbose: false, printResults: false })
+assert.deepEqual(stepRun2.outputs, stepRun1.outputs)
+assert.deepEqual(stepRun2.results[0].cachedSteps, ['Cached'])
+
+// mapWithLimit keeps order, bounds calls in flight, and fails fast
+let mapInFlight = 0
+let mapPeak = 0
+const mapped = await mapWithLimit([3, 0, 2, 1], 2, async (delay, index) => {
+	mapInFlight++
+	mapPeak = Math.max(mapPeak, mapInFlight)
+	await new Promise((resolve) => setTimeout(resolve, delay))
+	mapInFlight--
+	return index
+})
+assert.deepEqual(mapped, [0, 1, 2, 3])
+assert.equal(mapPeak, 2)
+await assert.rejects(
+	() => mapWithLimit([1, 2, 3], 1, (item) => { if (item === 2) throw new Error('map failed'); return item }),
+	/map failed/,
+)
 
 console.log('Verified plantr smoke test on Node.js ' + process.version)
 `,
@@ -265,6 +348,24 @@ console.log('Verified plantr smoke test on Node.js ' + process.version)
 			stdio: 'inherit',
 			timeout: 30_000,
 		})
+
+		// SIGINT and SIGTERM tear down before exiting, on Node.js and on Bun
+		const signalFixture = join(temporary, 'signal-run.mjs')
+		copyFileSync(join(root, 'src/fixtures/signal-run.mjs'), signalFixture)
+		for (const runtime of [process.execPath, 'bun']) {
+			for (const [signal, exitCode] of [
+				['SIGINT', 130],
+				['SIGTERM', 143],
+			]) {
+				const result = await runUntilSignal(runtime, signalFixture, signal)
+				assert.deepEqual(
+					result,
+					{ exitCode, lines: ['ready', 'teardown connected', 'deferred'] },
+					`${signal} on ${runtime}`,
+				)
+			}
+		}
+		console.log('Verified SIGINT and SIGTERM teardown on Node.js and Bun')
 
 		// Bun import + smoke test (verifies bun:test expect resolution on Bun)
 		execFileSync('bun', ['--input-type=module', '-e', code], {
@@ -470,4 +571,29 @@ void inst.defineSeeder({
 	)
 } finally {
 	rmSync(temporary, { recursive: true, force: true })
+}
+
+/** Run the signal fixture until it prints "ready", send `signal`, and collect what it printed */
+function runUntilSignal(runtime, fixture, signal) {
+	return new Promise((resolvePromise, reject) => {
+		const child = spawn(runtime, [fixture, 'plantr'], { cwd: temporary })
+		let stdout = ''
+		let sent = false
+		const timer = setTimeout(() => {
+			child.kill('SIGKILL')
+			reject(new Error(`${runtime} signal fixture timed out: ${stdout}`))
+		}, 30_000)
+		child.stdout.on('data', (chunk) => {
+			stdout += chunk
+			if (!sent && stdout.includes('ready')) {
+				sent = true
+				child.kill(signal)
+			}
+		})
+		child.on('error', reject)
+		child.on('exit', (code) => {
+			clearTimeout(timer)
+			resolvePromise({ exitCode: code, lines: stdout.trim().split('\n') })
+		})
+	})
 }

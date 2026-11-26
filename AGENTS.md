@@ -25,11 +25,16 @@ plantr/
     ├── define-seeder.ts           # Seeder definition
     ├── run-seeders.ts             # Core runner, target guard (describeTarget, SeedTargetError)
     ├── dependency-resolver.ts     # Topological sort, `only` selection, registry errors
+    ├── errors.ts                  # SeedUsageError and usageErrorSymbol: the CLI prints the message only
     ├── step.ts                    # Step runner with versioned cache envelope, getAll/setMany batching
     ├── expect.ts                  # Portable ExpectFn types, dynamic bun:test loader, node:assert/strict fallback
     ├── lazy-faker.ts              # Lazy-loaded English faker proxy (defers locale load until first access)
+    ├── map-with-limit.ts          # mapWithLimit: ordered results, bounded concurrency, fail-fast
     ├── seeding-state.ts           # Seeding flag on globalThis (shared by both entry points)
+    ├── signals.ts                 # One SIGINT/SIGTERM listener shared by active runs: tear down, then exit
     └── formatting.ts              # Output formatting and runtime-safe inspectValue helper
 ```
 
-Run order inside `runSeeders`: validate the registry and options (throws) → target guard (throws) → seeding flag on (ref-counted) → `onBeforeAll` → `cache.getAll()` preload (if configured) → context factory → seeders (sequential or critical-path parallel DAG) → results → `cache.setMany()` flush (if configured) → `onAfterAll(ctx)` → flag off.
+Run order inside `runSeeders`: validate the registry and options (throws) → target guard (throws) → seeding flag on (ref-counted), signal listener on → `onBeforeAll` → `setup` → `cache.getAll()` preload (if configured) → context factory(resources) → seeders (sequential or critical-path parallel DAG) → results → cleanup: `cache.setMany()` flush, `onAfterAll(ctx)`, `teardown(resources)`, deferred cleanups (each runs if the step it undoes completed; SIGINT/SIGTERM runs the same cleanup, then exits) → signal listener off, flag off.
+
+`src/fixtures/` holds scripts the tests run in a child process (the signal tests); `verify:package` runs them on Node.js too.

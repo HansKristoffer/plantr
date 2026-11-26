@@ -1,9 +1,10 @@
+import { SeedUsageError } from './errors.js'
 import type { SeederAny } from './types.js'
 
 /**
  * Error thrown when circular dependencies are detected in seeders
  */
-export class CircularDependencyError extends Error {
+export class CircularDependencyError extends SeedUsageError {
 	constructor(cycle: string[]) {
 		super(`Circular dependency detected in seeders: ${cycle.join(' -> ')} -> ${cycle[0] ?? ''}`)
 		this.name = 'CircularDependencyError'
@@ -13,7 +14,7 @@ export class CircularDependencyError extends Error {
 /**
  * Error thrown when a seeder depends on a non-existent seeder
  */
-export class MissingDependencyError extends Error {
+export class MissingDependencyError extends SeedUsageError {
 	constructor(seeder: string, missingDep: string) {
 		super(`Seeder "${seeder}" depends on "${missingDep}" which does not exist`)
 		this.name = 'MissingDependencyError'
@@ -23,7 +24,7 @@ export class MissingDependencyError extends Error {
 /**
  * Error thrown when two seeders share a name
  */
-export class DuplicateSeederError extends Error {
+export class DuplicateSeederError extends SeedUsageError {
 	constructor(name: string) {
 		super(`Two seeders are named "${name}"; seeder names must be unique`)
 		this.name = 'DuplicateSeederError'
@@ -33,7 +34,7 @@ export class DuplicateSeederError extends Error {
 /**
  * Error thrown when a seeder is selected by a name that is not registered
  */
-export class UnknownSeederError extends Error {
+export class UnknownSeederError extends SeedUsageError {
 	constructor(name: string, known: readonly string[]) {
 		super(`Unknown seeder "${name}". Registered seeders: ${known.join(', ') || '(none)'}`)
 		this.name = 'UnknownSeederError'

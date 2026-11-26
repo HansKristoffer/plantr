@@ -1,4 +1,5 @@
 import { inspect as nodeInspect } from 'node:util'
+import { isSeedUsageError } from './errors.js'
 import type { SeederResult } from './types.js'
 
 type BunInspectGlobal = {
@@ -17,6 +18,14 @@ export function inspectValue(value: unknown, options?: { colors?: boolean }): st
 		return options ? bunInspect(value, options) : bunInspect(value)
 	}
 	return nodeInspect(value, { colors: options?.colors ?? false })
+}
+
+/**
+ * An error as the person running the seed should see it: a usage error by its message
+ * alone, anything else in full (message, stack, `cause` and extra fields).
+ */
+export function formatError(error: unknown, options?: { colors?: boolean }): string {
+	return isSeedUsageError(error) ? error.message : inspectValue(error, options)
 }
 
 /**
@@ -154,7 +163,7 @@ export function printErrors(results: readonly SeederResult[]): void {
 	for (const result of failed) {
 		const where = result.failedStep ? ` in step "${result.failedStep}"` : ''
 		console.log(colorize(`❌ Seeder "${result.name}" failed${where}:`, 'red'))
-		const details = inspectValue(result.error, { colors: supportsColor() })
+		const details = formatError(result.error, { colors: supportsColor() })
 		for (const line of details.split('\n')) console.log(`   ${line}`)
 		if (result.cachedSteps.length > 0) {
 			console.log(
@@ -172,6 +181,28 @@ export function printErrors(results: readonly SeederResult[]): void {
 		}
 		console.log('')
 	}
+}
+
+/**
+ * Print errors thrown while cleaning up (cache flush, onAfterAll, teardown, deferred
+ * cleanups) that are not rethrown, so a second failure is never silently lost.
+ */
+export function printCleanupErrors(errors: readonly unknown[]): void {
+	for (const error of errors) {
+		console.error(colorize('Cleanup after the run also failed:', 'red'))
+		for (const line of formatError(error, { colors: supportsColor() }).split('\n')) {
+			console.error(`   ${line}`)
+		}
+	}
+}
+
+/**
+ * Print that `onFresh` is about to run, before the seeders
+ */
+export function printFreshReset(seeders: readonly string[], all: boolean): void {
+	const which = all ? 'every seeder runs fresh' : `fresh: ${seeders.join(', ')}`
+	console.log(colorize(`↺ onFresh (${which})`, 'yellow'))
+	console.log('')
 }
 
 /**

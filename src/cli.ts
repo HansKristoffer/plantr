@@ -1,6 +1,6 @@
 import { parseArgs } from 'node:util'
 import { resolveDependencyOrder } from './dependency-resolver.js'
-import { colorize, inspectValue } from './formatting.js'
+import { colorize, formatError } from './formatting.js'
 import { describeTarget } from './run-seeders.js'
 import type { RunSeedersOptions, SeederAny } from './types.js'
 
@@ -16,15 +16,6 @@ type CliRunner = (
 	seeders: readonly SeederAny[],
 	options?: RunSeedersOptions,
 ) => Promise<{ success: boolean }>
-
-/** Errors whose message says everything; others are printed with their stack */
-const USAGE_ERRORS = new Set([
-	'CircularDependencyError',
-	'MissingDependencyError',
-	'DuplicateSeederError',
-	'UnknownSeederError',
-	'SeedTargetError',
-])
 
 function formatSeedersList(seeders: readonly SeederAny[]): string {
 	if (seeders.length === 0) return 'No seeders registered.'
@@ -45,7 +36,8 @@ ${colorize('Arguments:', 'white', 'bold')}
 ${colorize('Options:', 'white', 'bold')}
   --only a,b             Same as naming the seeders
   --fresh                Ignore and overwrite cached steps of the named seeders
-                         (of every seeder when none are named)
+                         (of every seeder when none are named), after the
+                         instance's onFresh hook, if any, resets the target
   --concurrency, -c <n>  Run up to <n> independent seeders in parallel (default: 1)
   --continue-on-failure  Keep running seeders that do not depend on a failed one
   --allow-remote         Seed a database that is not local
@@ -225,8 +217,7 @@ export async function runCli(
 		})
 		return success ? 0 : 1
 	} catch (error) {
-		const usage = error instanceof Error && USAGE_ERRORS.has(error.name)
-		console.error(colorize(usage ? (error as Error).message : inspectValue(error), 'red'))
+		console.error(colorize(formatError(error), 'red'))
 		return 1
 	}
 }

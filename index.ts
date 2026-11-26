@@ -57,6 +57,7 @@ export {
 	resolveDependencyOrder,
 	UnknownSeederError,
 } from './src/dependency-resolver.js'
+export { isSeedUsageError, SeedUsageError, usageErrorSymbol } from './src/errors.js'
 export type {
 	AnyExpectFn,
 	ErrorConstructor,
@@ -67,9 +68,12 @@ export { expect } from './src/expect.js'
 export type { ColorName, StyleName } from './src/formatting.js'
 export { colorize, formatDuration } from './src/formatting.js'
 export { lazyFaker as faker } from './src/lazy-faker.js'
+export { mapWithLimit } from './src/map-with-limit.js'
 export type {
+	FreshRun,
 	InternalSeederConfig,
 	SeederScopeHandle,
+	SetupHelpers,
 	TargetDescription,
 } from './src/run-seeders.js'
 export { describeTarget, runSeedersCore, SeedTargetError } from './src/run-seeders.js'
@@ -84,6 +88,7 @@ export type {
 	CacheWrite,
 	SeederCache,
 	StepFn,
+	StepIdentity,
 	StepOptions,
 	StepRecord,
 	StepRunner,
