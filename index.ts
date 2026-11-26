@@ -1,11 +1,13 @@
 /**
  * plantr - Generic seeder library with built-in faker, step, and expect
  *
- * A Bun-first library for creating type-safe database seeders with dependency resolution.
- * The library provides a base context with faker, step, and expect. Consumers
- * extend this with their own context (e.g. prisma, custom helpers).
+ * A TypeScript library for Bun and Node.js (>= 22) for creating type-safe database
+ * seeders with dependency resolution. The library provides a base context with faker,
+ * step, and expect. Consumers extend this with their own context (e.g. prisma, custom helpers).
  *
- * Note: This library requires Bun as it uses bun:test for the expect function.
+ * On Bun, `expect` defaults to `bun:test`. On Node.js, `expect` uses a zero-dependency
+ * `node:assert/strict` fallback, or you can pass a custom `expect` (e.g. Vitest's) to
+ * `createSeederInstance({ expect })`.
  *
  * @example
  * ```typescript
@@ -34,14 +36,14 @@
  * ```
  */
 
-// Re-export lazy-loaded English faker (0ms until first access) and expect for convenience
-export { expect } from 'bun:test'
+// Re-export lazy-loaded English faker (0ms until first access) and runtime-safe expect
 export type { Faker } from '@faker-js/faker'
 // CLI types
 export type { RunSeedersCliOptions } from './src/cli.js'
 // Main API
 export type {
 	ResolvedContext,
+	ResolvedExpect,
 	SeederInstance,
 	SeederInstanceConfig,
 } from './src/create-seeder-instance.js'
@@ -55,6 +57,13 @@ export {
 	resolveDependencyOrder,
 	UnknownSeederError,
 } from './src/dependency-resolver.js'
+export type {
+	AnyExpectFn,
+	ErrorConstructor,
+	ExpectFn,
+	ExpectMatchers,
+} from './src/expect.js'
+export { expect } from './src/expect.js'
 export type { ColorName, StyleName } from './src/formatting.js'
 export { colorize, formatDuration } from './src/formatting.js'
 export { lazyFaker as faker } from './src/lazy-faker.js'

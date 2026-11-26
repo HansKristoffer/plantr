@@ -1,8 +1,8 @@
-import { expect } from 'bun:test'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import type { Faker } from '@faker-js/faker'
 import { type RunSeedersCliOptions, runCli } from './cli.js'
 import { createDefineSeeder } from './define-seeder.js'
+import { type AnyExpectFn, type ExpectFn, getDefaultExpect } from './expect.js'
 import { getDefaultFaker, lazyFaker } from './lazy-faker.js'
 import { runSeedersCore } from './run-seeders.js'
 import { isSeedingActive } from './seeding-state.js'
@@ -19,19 +19,32 @@ import type {
 	ValidateSeeders,
 } from './types.js'
 
+/** Resolve the effective `expect` type from an optional `config.expect` type parameter */
+export type ResolvedExpect<TExpect> = [Exclude<TExpect, undefined>] extends [never]
+	? ExpectFn
+	: [AnyExpectFn] extends [Exclude<TExpect, undefined>]
+		? ExpectFn
+		: undefined extends TExpect
+			? Exclude<TExpect, undefined> | ExpectFn
+			: TExpect
+
 /**
  * Full context type resolved from `BaseSeederContext` plus the extra properties
  * returned by `config.context`. Any base key returned by `context` overrides the default.
  */
-export type ResolvedContext<TExtra extends object = Record<never, never>> = Prettify<
-	Omit<BaseSeederContext, keyof TExtra> & TExtra
->
+export type ResolvedContext<
+	TExtra extends object = Record<never, never>,
+	TExpect = ExpectFn,
+> = Prettify<Omit<BaseSeederContext<ResolvedExpect<TExpect>>, keyof TExtra> & TExtra>
 
 /**
  * Configuration for creating a seeder instance.
  * `context` is optional and its returned properties are automatically merged onto `BaseSeederContext`.
  */
-export type SeederInstanceConfig<TExtra extends object = Record<never, never>> = {
+export type SeederInstanceConfig<
+	TExtra extends object = Record<never, never>,
+	TExpect extends AnyExpectFn | undefined = ExpectFn,
+> = {
 	/**
 	 * Optional factory function that extends the base context (`faker`, `step`, `expect`).
 	 * Returned properties are merged onto `base` automatically — no need to spread `...base`,
@@ -43,7 +56,16 @@ export type SeederInstanceConfig<TExtra extends object = Record<never, never>> =
 	 * context: () => ({ prisma })
 	 * ```
 	 */
-	context?: ((base: BaseSeederContext) => MaybePromise<TExtra>) | undefined
+	context?:
+		| ((base: NoInfer<BaseSeederContext<ResolvedExpect<TExpect>>>) => MaybePromise<TExtra>)
+		| undefined
+
+	/**
+	 * Optional: custom `expect` assertion function (for example Vitest's `expect`).
+	 * Defaults to `bun:test`'s `expect` on Bun and a zero-dependency `node:assert/strict`
+	 * implementation on Node.js.
+	 */
+	expect?: TExpect | undefined
 
 	/**
 	 * Optional cache for step caching.
@@ -116,7 +138,7 @@ export type SeederInstanceConfig<TExtra extends object = Record<never, never>> =
 	 * ```
 	 */
 	onAfterAll?:
-		| ((ctx: NoInfer<ResolvedContext<TExtra>> | undefined) => MaybePromise<void>)
+		| ((ctx: NoInfer<ResolvedContext<TExtra, TExpect>> | undefined) => MaybePromise<void>)
 		| undefined
 }
 
@@ -243,14 +265,18 @@ type FakerSlot = {
 	instance?: Faker
 }
 
-export function createSeederInstance<TExtra extends object = Record<never, never>>(
-	config?: SeederInstanceConfig<TExtra>,
-): SeederInstance<ResolvedContext<TExtra>> {
-	type TContext = ResolvedContext<TExtra>
+export function createSeederInstance<
+	TExtra extends object = Record<never, never>,
+	TExpect extends AnyExpectFn | undefined = ExpectFn,
+>(
+	config?: SeederInstanceConfig<TExtra, TExpect>,
+): SeederInstance<ResolvedContext<TExtra, TExpect>> {
+	type TContext = ResolvedContext<TExtra, TExpect>
 
 	const defineSeeder = createDefineSeeder<TContext>()
 	const customFaker = config?.faker && config.faker !== lazyFaker ? config.faker : undefined
 	const resolveBaseFaker = (): Faker => customFaker ?? getDefaultFaker()
+	const customExpect = config?.expect
 	const fakerSeed = config?.fakerSeed
 	const defaultConcurrency = config?.concurrency
 
@@ -317,10 +343,10 @@ export function createSeederInstance<TExtra extends object = Record<never, never
 			seeders,
 			{
 				context: async () => {
-					const base: BaseSeederContext = {
+					const base: BaseSeederContext<ResolvedExpect<TExpect>> = {
 						faker: scopedFaker,
 						step: stepRunner.step,
-						expect,
+						expect: (customExpect ?? getDefaultExpect()) as ResolvedExpect<TExpect>,
 					}
 					if (!config?.context) return base as unknown as TContext
 					const extra = await config.context(base)

@@ -1,4 +1,23 @@
+import { inspect as nodeInspect } from 'node:util'
 import type { SeederResult } from './types.js'
+
+type BunInspectGlobal = {
+	Bun?: {
+		inspect?: (value: unknown, options?: { colors?: boolean }) => string
+	}
+}
+
+/**
+ * Runtime-safe value inspection: uses `Bun.inspect` on Bun and falls back to
+ * `node:util`'s `inspect` on Node.js.
+ */
+export function inspectValue(value: unknown, options?: { colors?: boolean }): string {
+	const bunInspect = (globalThis as BunInspectGlobal).Bun?.inspect
+	if (typeof bunInspect === 'function') {
+		return options ? bunInspect(value, options) : bunInspect(value)
+	}
+	return nodeInspect(value, { colors: options?.colors ?? false })
+}
 
 /**
  * ANSI color codes for terminal output
@@ -125,7 +144,8 @@ const escapeAnnotation = (text: string) =>
 
 /**
  * Print error details for failed seeders: the failing step, the full error (message,
- * stack, cause and own fields via Bun.inspect) and a hint when cached steps ran first.
+ * stack, cause and own fields via Bun.inspect on Bun or util.inspect on Node.js) and
+ * a hint when cached steps ran first.
  * Under GitHub Actions, also prints one `::error` annotation per failed seeder.
  */
 export function printErrors(results: readonly SeederResult[]): void {
@@ -134,7 +154,7 @@ export function printErrors(results: readonly SeederResult[]): void {
 	for (const result of failed) {
 		const where = result.failedStep ? ` in step "${result.failedStep}"` : ''
 		console.log(colorize(`❌ Seeder "${result.name}" failed${where}:`, 'red'))
-		const details = Bun.inspect(result.error, { colors: supportsColor() })
+		const details = inspectValue(result.error, { colors: supportsColor() })
 		for (const line of details.split('\n')) console.log(`   ${line}`)
 		if (result.cachedSteps.length > 0) {
 			console.log(

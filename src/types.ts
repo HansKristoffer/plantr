@@ -5,8 +5,8 @@
  * Consumers can extend this with their own context (e.g. prisma, custom helpers).
  */
 
-import type { expect } from 'bun:test'
 import type { Faker } from '@faker-js/faker'
+import type { ExpectFn } from './expect.js'
 import type { StepFn } from './step.js'
 
 /** Flatten intersections and mapped types for cleaner IDE hover tooltips */
@@ -29,13 +29,13 @@ export type JsonValue =
  * Contains faker for generating test data, step for workflow organization,
  * and expect for assertions.
  */
-export type BaseSeederContext = {
+export type BaseSeederContext<TExpect = ExpectFn> = {
 	/** Faker instance for generating test data */
 	faker: Faker
 	/** Step function for organizing seeder workflow */
 	step: StepFn
-	/** Assertion function from bun:test for verifying data */
-	expect: typeof expect
+	/** Assertion function for verifying data (bun:test on Bun, built-in fallback on Node, or custom) */
+	expect: TExpect
 }
 
 /** Extract the output type from a Seeder */

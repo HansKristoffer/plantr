@@ -1,16 +1,17 @@
 # plantr
 
-A Bun-first database seeder library with built-in faker, step workflow, parallel DAG execution, and end-to-end TypeScript inference.
+A TypeScript database seeder library for **Bun and Node.js (>= 22)** with built-in faker, step workflow, parallel DAG execution, and end-to-end TypeScript inference.
 
 ## Features
 
-- **Built-in utilities** - `faker`, `step`, and `expect` available in every seeder (`faker` is lazy-loaded on first access, English locale only by default)
+- **Bun & Node.js (>= 22)** - Runs natively on both Bun and Node.js (`node`, `tsx`, `ts-node`, `vitest`) with zero extra dependencies
+- **Built-in utilities** - `faker`, `step`, and `expect` available in every seeder (`faker` is lazy-loaded on first access, English locale only by default; `expect` uses `bun:test` on Bun, a built-in `node:assert/strict` implementation on Node.js, or your own `expect` such as Vitest's)
 - **End-to-end TypeScript** - Zero-boilerplate context inference, context-safe seeder registries, typed dependencies, typed `outputs`, discriminated-union `results`, compile-time missing dependency checks, and autocompleted `only`/`fresh`
 - **Automatic ordering & parallel DAG execution** - Runs in dependency order with critical-path scheduling across independent branches via `concurrency` / `--concurrency`
 - **Run a subset** - Run named seeders plus what they depend on (`--only`, `only`)
 - **Step workflow** - Organize seeders into sequential or `Promise.all` parallel steps with progress logging
 - **Step caching** - Skip steps that already ran, with explicit keys, canonical JSON versions, single-query `getAll` preloading, batched `setMany` writes, and a `--fresh` override
-- **Target guard** - Refuse to seed a database that is not local unless asked to
+- **Target guard** - Refuse to seed a database or emulator target that is not local unless asked to
 - **Lifecycle hooks** - `onBeforeAll` / `onAfterAll(ctx)` for setup and teardown
 - **Continue on failure** - Keep seeding independent data when one seeder fails
 - **Dry run & list modes** - Preview execution order, target, and descriptions without running
@@ -19,9 +20,11 @@ A Bun-first database seeder library with built-in faker, step workflow, parallel
 
 ```bash
 bun add plantr
+# or with pnpm / npm on Node.js >= 22
+pnpm add plantr
 ```
 
-> **Note:** This library requires Bun as it uses `bun:test` for assertions.
+> **Runtime support:** Works on **Bun >= 1.0** and **Node.js >= 22**. On Bun, `expect` delegates to `bun:test`. On Node.js, `expect` uses a zero-dependency fallback backed by `node:assert/strict` (covering `toBe`, `toEqual`, `toStrictEqual`, `toBeDefined`, `toBeUndefined`, `toBeNull`, `toBeTruthy`, `toBeFalsy`, `toContain`, `toHaveLength`, `toMatch`, `toBeGreaterThan`, `toBeGreaterThanOrEqual`, `toBeLessThan`, `toBeLessThanOrEqual`, `toThrow`, and `.not.*`), or pass your own `expect` (for example Vitest's `expect`) via `createSeederInstance({ expect })`.
 
 ## Quick Start
 
@@ -118,6 +121,8 @@ if (import.meta.main) {
 Run with:
 ```bash
 bun run src/seed.ts
+# or on Node.js:
+npx tsx src/seed.ts
 ```
 
 Or programmatically (e.g. in tests) with fully typed `outputs`:
@@ -173,7 +178,11 @@ createSeederInstance({
   // Optional: custom Faker locale instance (default: lazy-loaded @faker-js/faker/locale/en)
   faker: fakerDE,
 
-  // Optional: the database URL the run writes to (see Target guard)
+  // Optional: custom `expect` implementation (e.g. Vitest's `expect`).
+  // Defaults to `bun:test` on Bun and a built-in `node:assert/strict` fallback on Node.js.
+  expect: vitestExpect,
+
+  // Optional: the database or emulator URL the run writes to (see Target guard)
   target: () => process.env.DATABASE_URL,
 
   // Optional: seed faker per seeder (fakerSeed + hash of the seeder name),
@@ -293,13 +302,13 @@ cache: {
 
 ## Target guard
 
-Set `target` to the database URL the instance writes to. The banner then shows its host and database, never credentials (`🌱 Running Seeders (2 seeders) → localhost:5432/app`), and a run refuses with `SeedTargetError` before `onBeforeAll` when the host is not local. Local means every host the URL names (several hosts, or a `host=` parameter, which overrides the URL's host) is loopback (`localhost`, `127.*`, `::1`), `*.localhost`, `host.docker.internal`, a socket directory or `file:` path, or a name without a dot such as a compose service. A target without a `scheme://` is refused. Seed anything else on purpose with `allowRemote: true` or `--allow-remote`, for example in a staging pre-deploy command.
+Set `target` to the database or emulator URL the instance writes to (for example `process.env.DATABASE_URL`, `http://127.0.0.1:8080`, or `firestore://127.0.0.1:8080/demo-app`). The banner then shows its host and path, never credentials (`🌱 Running Seeders (2 seeders) → localhost:5432/app`), and a run refuses with `SeedTargetError` before `onBeforeAll` when the target is not local. Local means every host the URL names (several hosts, or a `host=` parameter, which overrides the URL's host) is loopback (`localhost`, `127.*`, `::1`, `0.0.0.0`), `*.localhost`, `host.docker.internal`, a socket directory or `file:` path, or a single-label hostname with an explicit port such as a compose service (`postgres:5432`). A bare name without a port (such as a cloud project URL like `firestore://my-prod-project`) or a target without a `scheme://` is refused. Seed anything else on purpose with `allowRemote: true` or `--allow-remote`, for example in a staging pre-deploy command.
 
 Without `target` there is no check. For other rules (an environment variable, a list of allowed hosts), throw from `onBeforeAll`.
 
 ## Seeding State
 
-Check if seeding is active to skip side effects. Runtime code (job queues, mailers, the API) should import it from `plantr/state`, which does not load faker or `bun:test`:
+Check if seeding is active to skip side effects. Runtime code (job queues, mailers, the API) should import it from `plantr/state`, which does not load faker, `bun:test`, or assertion helpers:
 
 ```typescript
 import { isSeedingActive } from 'plantr/state'
@@ -339,7 +348,7 @@ try {
 }
 ```
 
-When a seeder fails, the summary names the failing step and prints the whole error with `Bun.inspect` (message, stack, `cause` and extra fields). Under GitHub Actions it also prints an `::error` annotation. Terminal colors respect `NO_COLOR`, `FORCE_COLOR`, and stdout TTY state.
+When a seeder fails, the summary names the failing step and prints the whole error (`Bun.inspect` on Bun or `util.inspect` on Node.js: message, stack, `cause` and extra fields). Under GitHub Actions it also prints an `::error` annotation. Terminal colors respect `NO_COLOR`, `FORCE_COLOR`, and stdout TTY state.
 
 ## License
 
