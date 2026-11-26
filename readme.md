@@ -171,7 +171,8 @@ createSeederInstance({
   // and the resources setup returned. Called once per run, after setup. Omit to use BaseSeederContext directly.
   context: (base, { prisma }) => ({ prisma }),
 
-  // Optional: cache for step caching (see Step Caching)
+  // Optional: cache for step caching (see Step Caching), or a function of setup's
+  // resources returning one: cache: ({ db }) => createCache(db)
   cache: {
     get: async (key) => { /* return the stored value, or undefined / null */ },
     set: async (key, value) => { /* store value, overwriting */ },
@@ -259,7 +260,7 @@ When `concurrency > 1` (configured on `createSeederInstance`, per `runSeeders` c
 Each cleanup step runs whenever the step it undoes completed, whatever failed after it:
 
 - **A seeder fails**: the run finishes as usual (`success: false`) and tears down.
-- **The context factory or a `cache` factory throws**: `teardown` gets the resources, then the run rethrows the error.
+- **The context factory or the `cache` factory throws**: `teardown` gets the resources, then the run rethrows the error.
 - **`setup` throws after acquiring part of its resources**: `teardown` does not run, because `setup` returned nothing to pass it. Register each resource's cleanup with `defer` as soon as you acquire it; deferred cleanups run when `setup` throws later, and after `teardown` on a run that got that far.
 - **SIGINT or SIGTERM** (Ctrl+C, `docker stop`, CI cancel): no further seeder starts, the cleanup above runs once, and the process exits with 130 or 143. Seeders already running are not awaited. A second signal exits at once. Pass `handleSignals: false` to `runSeeders` to keep your own signal handlers in charge.
 - **A cleanup step throws**: the rest still run. The run rethrows the first error (the one that stopped the run, if any) and prints the others to stderr.
@@ -332,12 +333,13 @@ A cached step stores its output under the key `<seederName>:<key or slugified de
 - **The value passes through your store.** With a JSON column, a `Date` comes back as a string and a `Map` as `{}` on the next run, so return plain JSON (ids) from cached steps.
 - **Every step must be safe to run again**: a version change, `fresh`, or a cleared cache reruns it against existing data.
 - plantr stores an envelope, `{ __plantr: 1, version?, value }`, so a step that returns `undefined` or `null` is cached too, while `undefined` or `null` returned bare from `cache.get` is treated as a cache miss. Non-null values written bare by plantr 1.x are still read as hits (when the step has no `version`).
+- Pass `cache` as a function to build it from the resources `setup` returned: `cache: ({ db }) => createCache(db)`. It runs once per run, after `setup` and before the preload, so a cache stored in the seeded database needs no connection of its own. Return `undefined` to run without a cache.
 - Provide `getAll` on `cache` to preload the entire table in a single query at the start of each run instead of issuing one `get` query per cached step, and `setMany` to flush new/updated entries in one batch write before `onAfterAll` (even if a later seeder fails).
 
-A Prisma store:
+A Prisma store, with the client from `setup`:
 
 ```typescript
-cache: {
+cache: ({ prisma }) => ({
   get: async (key) => {
     const row = await prisma.seedCache.findUnique({ where: { key } })
     return row?.output
@@ -358,7 +360,7 @@ cache: {
       }),
     )
   },
-}
+})
 ```
 
 ## Target guard

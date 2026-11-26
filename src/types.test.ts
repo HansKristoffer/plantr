@@ -323,6 +323,11 @@ describe('TypeScript ergonomics and type safety', () => {
 				assertType<Equal<typeof resources, { db: Db; token: 'secret' }>>()
 				await resources.db.close()
 			},
+			cache: ({ token }) => {
+				assertType<Equal<typeof token, 'secret'>>()
+				const cache: SeederCache = { get: () => undefined, set: () => {} }
+				return cache
+			},
 		})
 		const seeder = instance.defineSeeder({
 			name: 'withResources',

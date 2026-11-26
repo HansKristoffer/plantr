@@ -6,7 +6,7 @@ import { type AnyExpectFn, type ExpectFn, getDefaultExpect } from './expect.js'
 import { getDefaultFaker, lazyFaker } from './lazy-faker.js'
 import { runSeedersCore, type SetupHelpers } from './run-seeders.js'
 import { isSeedingActive } from './seeding-state.js'
-import { createStepRunner, type SeederCache } from './step.js'
+import { createStepRunner, type SeederCache, type StepRunner } from './step.js'
 import type {
 	BaseSeederContext,
 	MaybePromise,
@@ -100,7 +100,10 @@ export type SeederInstanceConfig<
 
 	/**
 	 * Optional cache for step caching.
-	 * Provide `get` / `set` (and optionally `getAll` for single-query preloading).
+	 * Provide `get` / `set` (and optionally `getAll` for single-query preloading), or a
+	 * function that builds the cache from the resources `setup` returned. The function runs
+	 * once per run, after `setup` and before the cache preload; return `undefined` to run
+	 * without a cache.
 	 *
 	 * @example
 	 * ```typescript
@@ -111,9 +114,14 @@ export type SeederInstanceConfig<
 	 *     await prisma.seedCache.upsert({ where: { key }, create: { key, output }, update: { output } })
 	 *   },
 	 * }
+	 * // or, from setup's resources:
+	 * cache: ({ db }) => db.seedCache,
 	 * ```
 	 */
-	cache?: SeederCache | undefined
+	cache?:
+		| SeederCache
+		| ((resources: NoInfer<TResources>) => MaybePromise<SeederCache | undefined>)
+		| undefined
 
 	/**
 	 * Optional: default maximum number of independent seeders to run concurrently (default: 1).
@@ -321,11 +329,13 @@ export function createSeederInstance<
 		options?: RunSeedersOptions,
 		bannerName?: string,
 	) => {
-		// One step runner and faker storage per run, so cache keys, duplicate checks, and scopes are isolated
-		const stepRunner = createStepRunner({
-			cache: config?.cache,
-			log: options?.verbose ?? true,
-		})
+		// One step runner and faker storage per run, so cache keys, duplicate checks, and scopes are
+		// isolated. The runner is built after setup, since the cache may come from its resources.
+		let stepRunner: StepRunner | undefined
+		const requireStepRunner = (): StepRunner => {
+			if (!stepRunner) throw new Error('plantr: the step runner is used before setup finished')
+			return stepRunner
+		}
 		const fakerStorage = new AsyncLocalStorage<FakerSlot>()
 		const resolveActiveFaker = (): Faker => {
 			const slot = fakerStorage.getStore()
@@ -378,10 +388,17 @@ export function createSeederInstance<
 		return runSeedersCore(
 			seeders,
 			{
+				prepare: async (resources) => {
+					const cache =
+						typeof config?.cache === 'function' ? await config.cache(resources) : config?.cache
+					stepRunner = createStepRunner({ cache, log: options?.verbose ?? true })
+				},
+				preloadCache: () => stepRunner?.preload(),
+				flushCache: () => stepRunner?.flush(),
 				context: async (resources) => {
 					const base: BaseSeederContext<ResolvedExpect<TExpect>> = {
 						faker: scopedFaker,
-						step: stepRunner.step,
+						step: requireStepRunner().step,
 						expect: (customExpect ?? getDefaultExpect()) as ResolvedExpect<TExpect>,
 					}
 					if (!config?.context) return base as unknown as TContext
@@ -390,9 +407,8 @@ export function createSeederInstance<
 						? (base as unknown as TContext)
 						: ({ ...base, ...extra } as unknown as TContext)
 				},
-				preloadCache: config?.cache?.getAll ? () => stepRunner.preload() : undefined,
-				flushCache: config?.cache?.setMany ? () => stepRunner.flush() : undefined,
 				createSeederScope: ({ name, fresh, concurrent }) => {
+					const stepRunner = requireStepRunner()
 					const stepScope = stepRunner.createScope({
 						seederName: name,
 						fresh,

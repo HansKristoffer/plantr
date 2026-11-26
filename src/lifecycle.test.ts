@@ -216,6 +216,103 @@ describe('setup and teardown', () => {
 	})
 })
 
+describe('cache factory', () => {
+	beforeEach(() => {
+		setSeedingActive(false)
+		spyOn(console, 'log').mockImplementation(() => {})
+		spyOn(console, 'error').mockImplementation(() => {})
+	})
+
+	const storeFor = (store: Map<string, unknown>, calls: string[]): SeederCache => ({
+		get: (key) => store.get(key),
+		set: (key, value) => {
+			store.set(key, value)
+		},
+		getAll: () => {
+			calls.push('getAll')
+			return store
+		},
+		setMany: (entries) => {
+			calls.push(`setMany ${entries.length}`)
+			for (const { key, value } of entries) store.set(key, value)
+		},
+	})
+
+	it('builds the cache from the resources after setup, once per run, and replays it on the next run', async () => {
+		const store = new Map<string, unknown>()
+		const calls: string[] = []
+		let runs = 0
+		const { defineSeeder, runSeeders } = createSeederInstance({
+			setup: () => {
+				calls.push('setup')
+				return { store }
+			},
+			cache: (resources) => {
+				calls.push('cache')
+				return storeFor(resources.store, calls)
+			},
+			teardown: () => {
+				calls.push('teardown')
+			},
+		})
+		const seeder = defineSeeder({
+			name: 'a',
+			run: ({ step }) => step('Create', () => ++runs, { useCache: true }),
+		})
+
+		const first = await runSeeders([seeder], quiet)
+		const second = await runSeeders([seeder], quiet)
+
+		expect(first.success && first.outputs.a).toBe(1)
+		expect(second.success && second.outputs.a).toBe(1)
+		expect(runs).toBe(1)
+		expect(second.success && second.results[0]?.status === 'completed').toBe(true)
+		expect(calls).toEqual([
+			'setup',
+			'cache',
+			'getAll',
+			'setMany 1',
+			'teardown',
+			'setup',
+			'cache',
+			'getAll',
+			'teardown',
+		])
+	})
+
+	it('accepts an async factory and runs without a cache when it returns undefined', async () => {
+		let runs = 0
+		const { defineSeeder, runSeeders } = createSeederInstance({
+			cache: async () => undefined,
+		})
+		const seeder = defineSeeder({
+			name: 'a',
+			run: ({ step }) => step('Create', () => ++runs, { useCache: true }),
+		})
+
+		await runSeeders([seeder], quiet)
+		await runSeeders([seeder], quiet)
+		expect(runs).toBe(2)
+	})
+
+	it('tears down when the cache factory throws', async () => {
+		const torn: string[] = []
+		const { defineSeeder, runSeeders } = createSeederInstance({
+			setup: () => ({ db: 'db' }),
+			cache: () => {
+				throw new Error('no cache collection')
+			},
+			teardown: ({ db }) => {
+				torn.push(db)
+			},
+		})
+		const seeder = defineSeeder({ name: 'a', run: () => 1 })
+
+		await expect(runSeeders([seeder], quiet)).rejects.toThrow('no cache collection')
+		expect(torn).toEqual(['db'])
+	})
+})
+
 describe('termination signals', () => {
 	const fixture = join(import.meta.dir, 'fixtures', 'signal-run.mjs')
 	const plantr = join(import.meta.dir, '..', 'index.ts')

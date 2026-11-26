@@ -257,12 +257,16 @@ const allowed = await remoteInst.runSeeders([noop], {
 })
 assert.equal(allowed.success, true)
 
-// setup resources reach the context factory and teardown, also when a seeder fails
+// setup resources reach the cache factory, context factory and teardown, also when a seeder fails
 const lifecycle = []
 const lifecycleInst = createSeederInstance({
 	setup: ({ defer }) => {
 		defer(() => lifecycle.push('deferred'))
 		return { db: 'node-db' }
+	},
+	cache: ({ db }) => {
+		lifecycle.push('cache ' + db)
+		return { get: () => undefined, set: () => {} }
 	},
 	context: (_base, { db }) => ({ db }),
 	teardown: ({ db }) => lifecycle.push('teardown ' + db),
@@ -276,7 +280,7 @@ const lifecycleSeed = lifecycleInst.defineSeeder({
 })
 const lifecycleRun = await lifecycleInst.runSeeders([lifecycleSeed], { verbose: false, printResults: false })
 assert.equal(lifecycleRun.success, false)
-assert.deepEqual(lifecycle, ['seed node-db', 'teardown node-db', 'deferred'])
+assert.deepEqual(lifecycle, ['cache node-db', 'seed node-db', 'teardown node-db', 'deferred'])
 
 console.log('Verified plantr smoke test on Node.js ' + process.version)
 `,
