@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.0](https://github.com/HansKristoffer/plantr/compare/v2.1.0...v2.2.0) (2026-11-26)
+
+
+### Features
+
+* support Node.js &gt;= 22 runtime, custom expect, and emulator target guard ([#8](https://github.com/HansKristoffer/plantr/issues/8)) ([a8c0c83](https://github.com/HansKristoffer/plantr/commit/a8c0c832a1ca783f07a32171a068ac7280ac5d2f))
+
 ## [2.1.0](https://github.com/HansKristoffer/plantr/compare/v2.0.0...v2.1.0) (2026-11-25)
 
 
