@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.0](https://github.com/HansKristoffer/plantr/compare/v2.2.0...v2.3.0) (2026-11-26)
+
+
+### Features
+
+* setup/teardown resources, cache factory, onFresh, per-step faker, usage errors and mapWithLimit ([#10](https://github.com/HansKristoffer/plantr/issues/10)) ([039ae4d](https://github.com/HansKristoffer/plantr/commit/039ae4d7e0e61b4554f942de143299a4d2f22246))
+
 ## [2.2.0](https://github.com/HansKristoffer/plantr/compare/v2.1.0...v2.2.0) (2026-11-26)
 
 
