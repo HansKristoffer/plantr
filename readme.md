@@ -142,7 +142,7 @@ bun run src/seed.ts                       # Run every seeder
 bun run src/seed.ts postSeeder            # Run postSeeder and the seeders it depends on
 bun run src/seed.ts --only a,b            # Same as naming them
 bun run src/seed.ts postSeeder --fresh    # Ignore and overwrite postSeeder's cached steps
-bun run src/seed.ts --fresh               # Ignore and overwrite every cached step
+bun run src/seed.ts --fresh               # Run onFresh (see Fresh runs), then ignore and overwrite every cached step
 bun run src/seed.ts --concurrency 4       # Run up to 4 independent seeders in parallel (-c 4)
 bun run src/seed.ts --continue-on-failure # Keep running seeders that do not depend on a failed one
 bun run src/seed.ts --allow-remote        # Seed a target that is not local (see Target guard)
@@ -179,6 +179,9 @@ createSeederInstance({
     getAll: async () => { /* optional: preload all entries in one query */ },
     setMany: async (entries) => { /* optional: flush all writes in one batch at end of run */ },
   },
+
+  // Optional: reset the target before a fresh run (see Fresh runs)
+  onFresh: async ({ resources, seeders, all }) => { if (all) await resources.db.wipe() },
 
   // Optional: default parallel concurrency for independent seeders (default: 1; e.g. 4 or Infinity)
   concurrency: 4,
@@ -254,8 +257,9 @@ When `concurrency > 1` (configured on `createSeederInstance`, per `runSeeders` c
 
 1. Validate the registry and options, then the target guard (both throw before anything else).
 2. `onBeforeAll` (deprecated), then `setup`.
-3. The context factory, the seeders, the results table.
-4. Cleanup: flush the step cache, `onAfterAll(ctx)` (deprecated), `teardown(resources)`, then the deferred cleanups, last registered first.
+3. The `cache` factory, `onFresh` on a fresh run, the cache preload.
+4. The context factory, the seeders, the results table.
+5. Cleanup: flush the step cache, `onAfterAll(ctx)` (deprecated), `teardown(resources)`, then the deferred cleanups, last registered first.
 
 Each cleanup step runs whenever the step it undoes completed, whatever failed after it:
 
@@ -362,6 +366,27 @@ cache: ({ prisma }) => ({
   },
 })
 ```
+
+### Fresh runs
+
+`fresh` (CLI `--fresh`) makes cached steps run again and overwrite their entries. When a step creates records whose ids the target picks, running it again creates them a second time. `onFresh` lets the project reset the target first:
+
+```typescript
+createSeederInstance({
+  setup: async () => ({ db: await connectEmulator() }),
+  onFresh: async ({ resources: { db }, seeders, all }) => {
+    if (!all) {
+      throw new Error(`Run --fresh without seeder names to reset the emulator (asked: ${seeders.join(', ')})`)
+    }
+    await db.wipe()
+  },
+})
+```
+
+- It runs after `setup` and the `cache` factory and before the cache preload and the context factory, so it may wipe a cache stored in the target too.
+- It runs only when at least one seeder of the run is fresh. `seeders` names them, in run order.
+- `all` is true only when every registered seeder runs, and runs fresh: `fresh: true` without `only`, or `--fresh` without seeder names. With `--fresh` plus names (`seed post --fresh`), only the named seeders run fresh: the seeders they depend on still replay cached ids of records a wipe would delete. So wipe only when `all` is true, and either do nothing or refuse (as above) otherwise.
+- If it throws, nothing is seeded and the run tears down.
 
 ## Target guard
 

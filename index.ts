@@ -68,6 +68,7 @@ export type { ColorName, StyleName } from './src/formatting.js'
 export { colorize, formatDuration } from './src/formatting.js'
 export { lazyFaker as faker } from './src/lazy-faker.js'
 export type {
+	FreshRun,
 	InternalSeederConfig,
 	SeederScopeHandle,
 	SetupHelpers,

@@ -4,6 +4,7 @@ import {
 	printConcurrentComplete,
 	printConcurrentSkipped,
 	printErrors,
+	printFreshReset,
 	printResultsTable,
 	printSeederComplete,
 	printSeederHeader,
@@ -45,6 +46,20 @@ export type SetupHelpers = {
 	defer: (cleanup: () => MaybePromise<void>) => void
 }
 
+/** Passed to `onFresh`: which seeders of this run ignore their cached steps */
+export type FreshRun<TResources = undefined> = {
+	/** What `setup` returned */
+	resources: TResources
+	/** Names of the seeders in this run that run fresh, in run order (never empty) */
+	seeders: readonly string[]
+	/**
+	 * Whether every registered seeder runs, and runs fresh (`fresh: true` without `only`,
+	 * or CLI `--fresh` without seeder names). Only then is wiping the whole target safe:
+	 * otherwise seeders outside `seeders` keep replaying cached ids of what they created.
+	 */
+	all: boolean
+}
+
 /**
  * Internal configuration used by the runner.
  * This is created by `createSeederInstance` and includes the wrapped context factory.
@@ -58,6 +73,8 @@ export type InternalSeederConfig<TContext, TResources = undefined> = {
 	teardown?: ((resources: TResources) => MaybePromise<void>) | undefined
 	/** Called once after setup, before the cache preload (createSeederInstance builds its cache here) */
 	prepare?: ((resources: TResources) => MaybePromise<void>) | undefined
+	/** Called after prepare and before the cache preload when at least one seeder of the run is fresh */
+	onFresh?: ((run: FreshRun<TResources>) => MaybePromise<void>) | undefined
 	/** Called once after setup to preload step cache entries (when cache.getAll is configured) */
 	preloadCache?: (() => MaybePromise<void>) | undefined
 	/** Called once before onAfterAll to flush buffered step cache writes (when cache.setMany is configured) */
@@ -297,6 +314,13 @@ export async function runSeedersCore<
 			await config.prepare(resources)
 		}
 		prepared = true
+
+		const freshSeeders = orderedNames.filter(isFresh)
+		if (config.onFresh && freshSeeders.length > 0) {
+			const all = freshSeeders.length === seederMap.size
+			if (verbose) printFreshReset(freshSeeders, all)
+			await config.onFresh({ resources, seeders: freshSeeders, all })
+		}
 
 		if (config.preloadCache) {
 			await config.preloadCache()

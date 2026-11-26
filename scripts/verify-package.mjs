@@ -282,6 +282,16 @@ const lifecycleRun = await lifecycleInst.runSeeders([lifecycleSeed], { verbose: 
 assert.equal(lifecycleRun.success, false)
 assert.deepEqual(lifecycle, ['cache node-db', 'seed node-db', 'teardown node-db', 'deferred'])
 
+// --fresh runs onFresh with setup's resources before seeding
+const freshRuns = []
+const freshInst = createSeederInstance({
+	setup: () => 'node-emulator',
+	onFresh: ({ resources, seeders, all }) => freshRuns.push({ resources, seeders, all }),
+})
+const freshSeed = freshInst.defineSeeder({ name: 'fresh', run: () => 1 })
+await freshInst.runSeeders([freshSeed], { verbose: false, printResults: false, fresh: true })
+assert.deepEqual(freshRuns, [{ resources: 'node-emulator', seeders: ['fresh'], all: true }])
+
 console.log('Verified plantr smoke test on Node.js ' + process.version)
 `,
 		)

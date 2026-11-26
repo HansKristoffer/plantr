@@ -188,6 +188,15 @@ export function printCleanupErrors(errors: readonly unknown[]): void {
 }
 
 /**
+ * Print that `onFresh` is about to run, before the seeders
+ */
+export function printFreshReset(seeders: readonly string[], all: boolean): void {
+	const which = all ? 'every seeder runs fresh' : `fresh: ${seeders.join(', ')}`
+	console.log(colorize(`↺ onFresh (${which})`, 'yellow'))
+	console.log('')
+}
+
+/**
  * Print seeder header before execution
  */
 export function printSeederHeader(

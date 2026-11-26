@@ -4,7 +4,7 @@ import { type RunSeedersCliOptions, runCli } from './cli.js'
 import { createDefineSeeder } from './define-seeder.js'
 import { type AnyExpectFn, type ExpectFn, getDefaultExpect } from './expect.js'
 import { getDefaultFaker, lazyFaker } from './lazy-faker.js'
-import { runSeedersCore, type SetupHelpers } from './run-seeders.js'
+import { type FreshRun, runSeedersCore, type SetupHelpers } from './run-seeders.js'
 import { isSeedingActive } from './seeding-state.js'
 import { createStepRunner, type SeederCache, type StepRunner } from './step.js'
 import type {
@@ -122,6 +122,24 @@ export type SeederInstanceConfig<
 		| SeederCache
 		| ((resources: NoInfer<TResources>) => MaybePromise<SeederCache | undefined>)
 		| undefined
+
+	/**
+	 * Optional: reset the target before a fresh run (CLI `--fresh`, or the `fresh` option),
+	 * for example wipe a local emulator, so steps that create records with ids the target
+	 * chooses do not create them a second time. Runs after `setup` and the cache factory,
+	 * before the cache preload and the context factory, and only when at least one seeder of
+	 * the run is fresh. `all` is true only when every registered seeder runs fresh: with
+	 * `--fresh` plus seeder names, the seeders they depend on still replay their cache, so
+	 * wipe only when `all` is true (or throw to refuse a partial fresh run).
+	 *
+	 * @example
+	 * ```typescript
+	 * onFresh: async ({ resources: { db }, all }) => {
+	 *   if (all) await db.wipe()
+	 * }
+	 * ```
+	 */
+	onFresh?: ((run: FreshRun<NoInfer<TResources>>) => MaybePromise<void>) | undefined
 
 	/**
 	 * Optional: default maximum number of independent seeders to run concurrently (default: 1).
@@ -428,6 +446,7 @@ export function createSeederInstance<
 				bannerName,
 				target: config?.target,
 				setup: config?.setup,
+				onFresh: config?.onFresh,
 				teardown: config?.teardown,
 				onBeforeAll: config?.onBeforeAll,
 				onAfterAll: config?.onAfterAll,

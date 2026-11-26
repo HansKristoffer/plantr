@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, spyOn } from 'bun:test'
 import { join } from 'node:path'
+import { runCli } from './cli.js'
 import { createSeederInstance } from './create-seeder-instance.js'
+import type { FreshRun } from './run-seeders.js'
 import { isSeedingActive, setSeedingActive } from './seeding-state.js'
 import type { SeederCache } from './step.js'
 
@@ -310,6 +312,132 @@ describe('cache factory', () => {
 
 		await expect(runSeeders([seeder], quiet)).rejects.toThrow('no cache collection')
 		expect(torn).toEqual(['db'])
+	})
+})
+
+describe('onFresh', () => {
+	beforeEach(() => {
+		setSeedingActive(false)
+		spyOn(console, 'log').mockImplementation(() => {})
+		spyOn(console, 'error').mockImplementation(() => {})
+	})
+
+	const build = () => {
+		const events: string[] = []
+		const freshRuns: Omit<FreshRun<{ db: string }>, 'resources'>[] = []
+		const store = new Map<string, unknown>()
+		const instance = createSeederInstance({
+			setup: () => ({ db: 'emulator' }),
+			cache: () => ({
+				get: (key) => store.get(key),
+				set: (key, value) => {
+					store.set(key, value)
+				},
+				getAll: () => {
+					events.push('preload')
+					return store
+				},
+			}),
+			onFresh: ({ resources, seeders, all }) => {
+				events.push(`onFresh ${resources.db}`)
+				freshRuns.push({ seeders, all })
+				if (all) store.clear()
+			},
+			context: () => {
+				events.push('context')
+				return {}
+			},
+			teardown: () => {
+				events.push('teardown')
+			},
+		})
+		const user = instance.defineSeeder({
+			name: 'user',
+			run: ({ step }) => step('Create user', () => events.push('user created'), { useCache: true }),
+		})
+		const post = instance.defineSeeder({
+			name: 'post',
+			dependsOn: [user],
+			run: ({ step }) => step('Create post', () => events.push('post created'), { useCache: true }),
+		})
+		const other = instance.defineSeeder({ name: 'other', run: () => {} })
+		const seeders = [user, post, other] as const
+		const cli = (...argv: string[]) =>
+			runCli(seeders, (s, opts) => instance.runSeeders(s as typeof seeders, opts as never), {
+				name: 'Test',
+				argv,
+			})
+		return { events, freshRuns, instance, seeders, cli }
+	}
+
+	it('resets before the cache preload and the context factory when every seeder runs fresh', async () => {
+		const { events, freshRuns, instance, seeders } = build()
+		await instance.runSeeders(seeders, quiet)
+		events.length = 0
+
+		await instance.runSeeders(seeders, { ...quiet, fresh: true })
+
+		expect(freshRuns).toEqual([{ seeders: ['user', 'other', 'post'], all: true }])
+		expect(events).toEqual([
+			'onFresh emulator',
+			'preload',
+			'context',
+			'user created',
+			'post created',
+			'teardown',
+		])
+	})
+
+	it('does not run without fresh, or when no seeder of the run is fresh', async () => {
+		const { freshRuns, instance, seeders } = build()
+		await instance.runSeeders(seeders, quiet)
+		await instance.runSeeders(seeders, { ...quiet, only: ['other'], fresh: ['post'] })
+		expect(freshRuns).toEqual([])
+	})
+
+	it('reports a partial fresh run with all: false, whose dependencies replay their cache', async () => {
+		const { events, freshRuns, instance, seeders } = build()
+		await instance.runSeeders(seeders, quiet)
+		events.length = 0
+
+		await instance.runSeeders(seeders, { ...quiet, only: ['post'], fresh: ['post'] })
+
+		expect(freshRuns).toEqual([{ seeders: ['post'], all: false }])
+		expect(events).toContain('post created')
+		expect(events).not.toContain('user created')
+
+		// fresh: true with only is still partial: seeders outside the selection keep their cache
+		await instance.runSeeders(seeders, { ...quiet, only: ['post'], fresh: true })
+		expect(freshRuns[1]).toEqual({ seeders: ['user', 'post'], all: false })
+	})
+
+	it('maps CLI --fresh to all: true, and --fresh with names to those seeders', async () => {
+		const { freshRuns, cli } = build()
+		expect(await cli('--fresh', '--quiet')).toBe(0)
+		expect(await cli('post', '--fresh', '--quiet')).toBe(0)
+		expect(freshRuns).toEqual([
+			{ seeders: ['user', 'other', 'post'], all: true },
+			{ seeders: ['post'], all: false },
+		])
+	})
+
+	it('tears down and seeds nothing when onFresh throws', async () => {
+		const events: string[] = []
+		const { defineSeeder, runSeeders } = createSeederInstance({
+			setup: () => 'db',
+			onFresh: () => {
+				throw new Error('only all-fresh runs can reset')
+			},
+			teardown: () => {
+				events.push('teardown')
+			},
+		})
+		const seeder = defineSeeder({ name: 'a', run: () => events.push('seeded') })
+
+		await expect(runSeeders([seeder], { ...quiet, fresh: true })).rejects.toThrow(
+			'only all-fresh runs can reset',
+		)
+		expect(events).toEqual(['teardown'])
 	})
 })
 

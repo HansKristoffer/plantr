@@ -45,7 +45,8 @@ ${colorize('Arguments:', 'white', 'bold')}
 ${colorize('Options:', 'white', 'bold')}
   --only a,b             Same as naming the seeders
   --fresh                Ignore and overwrite cached steps of the named seeders
-                         (of every seeder when none are named)
+                         (of every seeder when none are named), after the
+                         instance's onFresh hook, if any, resets the target
   --concurrency, -c <n>  Run up to <n> independent seeders in parallel (default: 1)
   --continue-on-failure  Keep running seeders that do not depend on a failed one
   --allow-remote         Seed a database that is not local
