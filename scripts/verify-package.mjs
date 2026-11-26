@@ -292,6 +292,25 @@ const freshSeed = freshInst.defineSeeder({ name: 'fresh', run: () => 1 })
 await freshInst.runSeeders([freshSeed], { verbose: false, printResults: false, fresh: true })
 assert.deepEqual(freshRuns, [{ resources: 'node-emulator', seeders: ['fresh'], all: true }])
 
+// fakerSeedScope: 'step' keeps draws after a cached step stable
+const stepStore = new Map()
+const stepInst = createSeederInstance({
+	fakerSeed: 1,
+	fakerSeedScope: 'step',
+	cache: { get: (key) => stepStore.get(key), set: (key, value) => { stepStore.set(key, value) } },
+})
+const stepSeed = stepInst.defineSeeder({
+	name: 'steps',
+	run: async ({ faker: f, step }) => {
+		const cached = await step('Cached', () => f.person.fullName(), { useCache: true })
+		return { cached, after: f.person.fullName() }
+	},
+})
+const stepRun1 = await stepInst.runSeeders([stepSeed], { verbose: false, printResults: false })
+const stepRun2 = await stepInst.runSeeders([stepSeed], { verbose: false, printResults: false })
+assert.deepEqual(stepRun2.outputs, stepRun1.outputs)
+assert.deepEqual(stepRun2.results[0].cachedSteps, ['Cached'])
+
 console.log('Verified plantr smoke test on Node.js ' + process.version)
 `,
 		)

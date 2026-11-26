@@ -170,6 +170,21 @@ export type SeederInstanceConfig<
 	fakerSeed?: number | undefined
 
 	/**
+	 * Optional, with `fakerSeed`: how finely faker is seeded (default: `'seeder'`).
+	 *
+	 * - `'seeder'`: one faker per seeder, seeded from `fakerSeed` and the seeder's name. A
+	 *   cached step skips its function, and with it the faker draws in it, so everything the
+	 *   seeder draws after that step shifts between a cached and an uncached run.
+	 * - `'step'`: each step's function also gets its own faker, seeded from `fakerSeed`, the
+	 *   seeder's name and the step's `key` (or description), plus a counter when a key repeats.
+	 *   Draws inside a step and draws after it are the same whether earlier steps ran or came
+	 *   from the cache, and parallel steps no longer share one sequence.
+	 *
+	 * Switching to `'step'` changes the data steps generate once, which is why it is not the default.
+	 */
+	fakerSeedScope?: 'seeder' | 'step' | undefined
+
+	/**
 	 * Called before all seeders run, before `setup` and the context factory.
 	 *
 	 * @deprecated Use `setup`: throw from it to refuse a run, and return what it connects
@@ -340,6 +355,7 @@ export function createSeederInstance<
 	const resolveBaseFaker = (): Faker => customFaker ?? getDefaultFaker()
 	const customExpect = config?.expect
 	const fakerSeed = config?.fakerSeed
+	const seedPerStep = fakerSeed !== undefined && config?.fakerSeedScope === 'step'
 	const defaultConcurrency = config?.concurrency
 
 	const runInternal = async (
@@ -409,7 +425,16 @@ export function createSeederInstance<
 				prepare: async (resources) => {
 					const cache =
 						typeof config?.cache === 'function' ? await config.cache(resources) : config?.cache
-					stepRunner = createStepRunner({ cache, log: options?.verbose ?? true })
+					stepRunner = createStepRunner({
+						cache,
+						log: options?.verbose ?? true,
+						aroundStep: seedPerStep
+							? ({ seederName, key, occurrence }, run) => {
+									const name = `${seederName}:${key}${occurrence > 0 ? `#${occurrence}` : ''}`
+									return fakerStorage.run({ name, isolated: true }, run)
+								}
+							: undefined,
+					})
 				},
 				preloadCache: () => stepRunner?.preload(),
 				flushCache: () => stepRunner?.flush(),

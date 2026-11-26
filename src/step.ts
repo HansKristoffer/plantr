@@ -86,6 +86,17 @@ export type StepScope = {
 	fresh: boolean
 	record: StepRecord
 	prefix?: string | undefined
+	/** How many steps per key this seeder started, so a repeated key gets its own identity */
+	keyCounts?: Map<string, number> | undefined
+}
+
+/** Identifies one step run, for `StepRunnerConfig.aroundStep` */
+export type StepIdentity = {
+	seederName: string
+	/** The step's explicit `key`, or else its description */
+	key: string
+	/** How many earlier steps of this seeder used the same key in this run (0 for the first) */
+	occurrence: number
 }
 
 export type StepRunnerConfig = {
@@ -94,6 +105,11 @@ export type StepRunnerConfig = {
 	seederName?: string | undefined
 	/** Print a line per step (default: true) */
 	log?: boolean | undefined
+	/**
+	 * Wraps each run of a step's function (not cache hits), for example to give the step
+	 * its own seeded faker. Must call `run` once and return its result.
+	 */
+	aroundStep?: (<T>(step: StepIdentity, run: () => MaybePromise<T>) => MaybePromise<T>) | undefined
 }
 
 export type StepRunner = {
@@ -150,7 +166,7 @@ function canonicalStringify(value: unknown): string {
  * Optionally provide a cache for step caching support.
  */
 export function createStepRunner(config?: StepRunnerConfig): StepRunner {
-	const { cache, log = true } = config ?? {}
+	const { cache, log = true, aroundStep } = config ?? {}
 	const scopeStorage = new AsyncLocalStorage<StepScope>()
 	let fallbackScope: StepScope = {
 		seederName: config?.seederName ?? '',
@@ -219,6 +235,16 @@ export function createStepRunner(config?: StepRunnerConfig): StepRunner {
 		const startTime = performance.now()
 		const prefix = formatPrefix(scope)
 
+		// Counted before any await, so steps started together (Promise.all) number in call order
+		const identityKey = options?.key ?? description
+		scope.keyCounts ??= new Map()
+		const occurrence = scope.keyCounts.get(identityKey) ?? 0
+		scope.keyCounts.set(identityKey, occurrence + 1)
+		const run = (): MaybePromise<T> =>
+			aroundStep
+				? aroundStep({ seederName: scope.seederName, key: identityKey, occurrence }, fn)
+				: fn()
+
 		try {
 			let result: T
 			let wasCached = false
@@ -255,7 +281,7 @@ export function createStepRunner(config?: StepRunnerConfig): StepRunner {
 					result = stored as T
 					wasCached = true
 				} else {
-					result = await fn()
+					result = await run()
 					const entry: CacheEntry =
 						version === undefined
 							? { __plantr: 1, value: result }
@@ -272,9 +298,9 @@ export function createStepRunner(config?: StepRunnerConfig): StepRunner {
 					warnedNoCache = true
 					print(`${prefix}${colorize('⚠ Cache not configured, running without cache', 'yellow')}`)
 				}
-				result = await fn()
+				result = await run()
 			} else {
-				result = await fn()
+				result = await run()
 			}
 
 			if (wasCached) scope.record.cachedSteps.push(description)

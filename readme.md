@@ -200,6 +200,9 @@ createSeederInstance({
   // so every run generates the same data even when running concurrently
   fakerSeed: 1,
 
+  // Optional, with fakerSeed: also seed each step's faker from its key (see Deterministic data)
+  fakerSeedScope: 'step', // default: 'seeder'
+
   // Deprecated: use setup and teardown (see Migrating from onBeforeAll and onAfterAll)
   onBeforeAll: async () => { /* runs before setup; throw to refuse the run */ },
   onAfterAll: async (ctx) => { /* runs before teardown; ctx is undefined if context() threw */ },
@@ -387,6 +390,24 @@ createSeederInstance({
 - It runs only when at least one seeder of the run is fresh. `seeders` names them, in run order.
 - `all` is true only when every registered seeder runs, and runs fresh: `fresh: true` without `only`, or `--fresh` without seeder names. With `--fresh` plus names (`seed post --fresh`), only the named seeders run fresh: the seeders they depend on still replay cached ids of records a wipe would delete. So wipe only when `all` is true, and either do nothing or refuse (as above) otherwise.
 - If it throws, nothing is seeded and the run tears down.
+
+## Deterministic data
+
+With `fakerSeed`, `ctx.faker` is seeded per seeder from `fakerSeed` and the seeder's name, so every run generates the same data and adding a seeder does not shift the others.
+
+A cached step skips its function, and with it the faker draws inside. With the default `fakerSeedScope: 'seeder'`, everything the seeder draws after that step comes out different on a run where the step was cached than on one where it ran. Either make every draw before the first step, or set `fakerSeedScope: 'step'`:
+
+```typescript
+createSeederInstance({ fakerSeed: 1, fakerSeedScope: 'step' })
+```
+
+Each step's function then gets its own faker, seeded from `fakerSeed`, the seeder's name and the step's `key` (or its description when it has none). A key used again in the same seeder (a step in a loop) gets a counter, so each iteration draws different data, in call order. The seeder's own faker never sees a step's draws, so:
+
+- draws inside a step, and draws after it, are the same whether earlier steps ran or came from the cache;
+- steps started together with `Promise.all` each draw their own sequence, whichever finishes first;
+- renaming a step without a `key` changes what it generates, as it changes its cache key.
+
+`'seeder'` stays the default because switching changes the data steps generate once. Seeders that draw nothing inside steps generate the same data under both. Without `fakerSeed`, `fakerSeedScope` has no effect.
 
 ## Target guard
 

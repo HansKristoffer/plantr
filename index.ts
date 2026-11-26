@@ -86,6 +86,7 @@ export type {
 	CacheWrite,
 	SeederCache,
 	StepFn,
+	StepIdentity,
 	StepOptions,
 	StepRecord,
 	StepRunner,
