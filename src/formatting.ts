@@ -175,6 +175,19 @@ export function printErrors(results: readonly SeederResult[]): void {
 }
 
 /**
+ * Print errors thrown while cleaning up (cache flush, onAfterAll, teardown, deferred
+ * cleanups) that are not rethrown, so a second failure is never silently lost.
+ */
+export function printCleanupErrors(errors: readonly unknown[]): void {
+	for (const error of errors) {
+		console.error(colorize('Cleanup after the run also failed:', 'red'))
+		for (const line of inspectValue(error, { colors: supportsColor() }).split('\n')) {
+			console.error(`   ${line}`)
+		}
+	}
+}
+
+/**
  * Print seeder header before execution
  */
 export function printSeederHeader(

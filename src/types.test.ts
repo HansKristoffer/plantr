@@ -307,4 +307,36 @@ describe('TypeScript ergonomics and type safety', () => {
 
 		expect(true).toBe(true)
 	})
+	it('infers resources from setup for the context factory and teardown', () => {
+		type Db = { close: () => Promise<void>; query: (sql: string) => number }
+		const db: Db = { close: async () => {}, query: (sql) => sql.length }
+		const instance = createSeederInstance({
+			setup: async ({ defer }) => {
+				defer(() => {})
+				return { db, token: 'secret' as const }
+			},
+			context: (_base, resources) => {
+				assertType<Equal<typeof resources, { db: Db; token: 'secret' }>>()
+				return { db: resources.db }
+			},
+			teardown: async (resources) => {
+				assertType<Equal<typeof resources, { db: Db; token: 'secret' }>>()
+				await resources.db.close()
+			},
+		})
+		const seeder = instance.defineSeeder({
+			name: 'withResources',
+			run: ({ db: client }) => client.query('SELECT 1'),
+		})
+		assertType<Equal<SeederOutput<typeof seeder>, number>>()
+
+		// Without setup, resources are undefined
+		createSeederInstance({
+			context: (_base, _resources) => {
+				assertType<Equal<typeof _resources, undefined>>()
+				return {}
+			},
+		})
+		expect(true).toBe(true)
+	})
 })

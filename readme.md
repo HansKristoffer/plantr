@@ -12,7 +12,7 @@ A TypeScript database seeder library for **Bun and Node.js (>= 22)** with built-
 - **Step workflow** - Organize seeders into sequential or `Promise.all` parallel steps with progress logging
 - **Step caching** - Skip steps that already ran, with explicit keys, canonical JSON versions, single-query `getAll` preloading, batched `setMany` writes, and a `--fresh` override
 - **Target guard** - Refuse to seed a database or emulator target that is not local unless asked to
-- **Lifecycle hooks** - `onBeforeAll` / `onAfterAll(ctx)` for setup and teardown
+- **Setup and teardown** - `setup()` returns the run's resources (a connection, a signed-in client) for the context factory, and `teardown(resources)` always runs: after a failure, when the context factory throws, and on SIGINT or SIGTERM
 - **Continue on failure** - Keep seeding independent data when one seeder fails
 - **Dry run & list modes** - Preview execution order, target, and descriptions without running
 
@@ -33,18 +33,19 @@ pnpm add plantr
 ```typescript
 // src/seed.ts
 import { createSeederInstance } from 'plantr'
-import { prisma } from './prisma'
+import { PrismaClient } from '@prisma/client'
 
 export const { defineSeeder, runSeeders, runSeedersCli } = createSeederInstance({
-  // Optional: extra properties are merged onto { faker, step, expect } automatically
-  context: () => ({ prisma }),
   target: () => process.env.DATABASE_URL,
-  onBeforeAll: async () => {
+  // Optional: acquire what the run needs; teardown always gets it back
+  setup: async () => {
+    const prisma = new PrismaClient()
     await prisma.$connect()
+    return { prisma }
   },
-  onAfterAll: async (ctx) => {
-    await ctx?.prisma.$disconnect()
-  },
+  teardown: ({ prisma }) => prisma.$disconnect(),
+  // Optional: extra properties are merged onto { faker, step, expect } automatically
+  context: (_base, { prisma }) => ({ prisma }),
 })
 ```
 
@@ -159,10 +160,16 @@ An unknown flag, invalid `--concurrency`, or unknown seeder name prints the prob
 
 ```typescript
 createSeederInstance({
+  // Optional: acquire the run's resources (see Setup and teardown); throw to refuse the run
+  setup: async ({ defer }) => ({ prisma: await connect() }),
+
+  // Optional: release them; runs whenever setup returned, also on failure and SIGINT/SIGTERM
+  teardown: async ({ prisma }) => { await prisma.$disconnect() },
+
   // Optional: factory returning extra properties to merge onto { faker, step, expect }.
-  // Receives `base` if you want to build helpers around faker/step/expect or override a base key.
-  // Called once per run, after onBeforeAll. Omit to use BaseSeederContext directly.
-  context: (base) => ({ prisma }),
+  // Receives `base` if you want to build helpers around faker/step/expect or override a base key,
+  // and the resources setup returned. Called once per run, after setup. Omit to use BaseSeederContext directly.
+  context: (base, { prisma }) => ({ prisma }),
 
   // Optional: cache for step caching (see Step Caching)
   cache: {
@@ -189,9 +196,9 @@ createSeederInstance({
   // so every run generates the same data even when running concurrently
   fakerSeed: 1,
 
-  // Optional: lifecycle hooks
-  onBeforeAll: async () => { /* setup; throw to refuse the run */ },
-  onAfterAll: async (ctx) => { /* teardown; receives ctx (or undefined if context() threw) */ },
+  // Deprecated: use setup and teardown (see Migrating from onBeforeAll and onAfterAll)
+  onBeforeAll: async () => { /* runs before setup; throw to refuse the run */ },
+  onAfterAll: async (ctx) => { /* runs before teardown; ctx is undefined if context() threw */ },
 })
 ```
 
@@ -223,6 +230,7 @@ const run = await runSeeders(seeders, {
   fresh: ['postSeeder'],    // Ignore cached steps: true for all, or checked seeder names
   allowRemote: false,       // Seed a non-local target (default: false)
   concurrency: 1,           // Max independent seeders running in parallel (default: 1; supports Infinity)
+  handleSignals: true,      // Tear down and exit on SIGINT/SIGTERM while running (default: true)
 })
 ```
 
@@ -238,6 +246,59 @@ When `concurrency > 1` (configured on `createSeederInstance`, per `runSeeders` c
 - Inside a single seeder, independent steps can also run concurrently with `await Promise.all([step(...), step(...)])`.
 
 `runSeeders` **throws**, before any hook or seeder runs (and before setting the seeding flag), when the input is invalid: `DuplicateSeederError`, `MissingDependencyError`, `CircularDependencyError`, `UnknownSeederError` (a name in `only` or `fresh`), `RangeError` (invalid `concurrency`), or `SeedTargetError`.
+
+### Setup and teardown
+
+`setup` acquires what the run needs and returns it; the context factory, a `cache` factory and `teardown` receive what it returned. A run goes:
+
+1. Validate the registry and options, then the target guard (both throw before anything else).
+2. `onBeforeAll` (deprecated), then `setup`.
+3. The context factory, the seeders, the results table.
+4. Cleanup: flush the step cache, `onAfterAll(ctx)` (deprecated), `teardown(resources)`, then the deferred cleanups, last registered first.
+
+Each cleanup step runs whenever the step it undoes completed, whatever failed after it:
+
+- **A seeder fails**: the run finishes as usual (`success: false`) and tears down.
+- **The context factory or a `cache` factory throws**: `teardown` gets the resources, then the run rethrows the error.
+- **`setup` throws after acquiring part of its resources**: `teardown` does not run, because `setup` returned nothing to pass it. Register each resource's cleanup with `defer` as soon as you acquire it; deferred cleanups run when `setup` throws later, and after `teardown` on a run that got that far.
+- **SIGINT or SIGTERM** (Ctrl+C, `docker stop`, CI cancel): no further seeder starts, the cleanup above runs once, and the process exits with 130 or 143. Seeders already running are not awaited. A second signal exits at once. Pass `handleSignals: false` to `runSeeders` to keep your own signal handlers in charge.
+- **A cleanup step throws**: the rest still run. The run rethrows the first error (the one that stopped the run, if any) and prints the others to stderr.
+
+```typescript
+createSeederInstance({
+  setup: async ({ defer }) => {
+    const db = await connectDb()
+    defer(() => db.close())             // runs even if signing in below throws
+    const api = await signIn(db, credentials)
+    return { db, api }
+  },
+  teardown: async ({ api }) => {
+    await api.signOut()                 // then the deferred db.close()
+  },
+  context: (_base, { db, api }) => ({ db, api }),
+})
+```
+
+#### Migrating from `onBeforeAll` and `onAfterAll`
+
+Both still run (`onBeforeAll` before `setup`, `onAfterAll` before `teardown`) and are deprecated. Move a connection opened in `onBeforeAll` and closed in `onAfterAll` into `setup` and `teardown`, and drop the module-level variable that carried it between them:
+
+```typescript
+// Before
+let db: Db | undefined
+createSeederInstance({
+  onBeforeAll: async () => { assertLocal(); db = await connectDb() },
+  context: () => ({ db: db! }),
+  onAfterAll: async () => { await db?.close() },
+})
+
+// After
+createSeederInstance({
+  setup: async () => { assertLocal(); return { db: await connectDb() } },
+  context: (_base, { db }) => ({ db }),
+  teardown: ({ db }) => db.close(),
+})
+```
 
 ### Step Function
 

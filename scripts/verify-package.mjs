@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import {
 	copyFileSync,
 	existsSync,
@@ -257,6 +257,27 @@ const allowed = await remoteInst.runSeeders([noop], {
 })
 assert.equal(allowed.success, true)
 
+// setup resources reach the context factory and teardown, also when a seeder fails
+const lifecycle = []
+const lifecycleInst = createSeederInstance({
+	setup: ({ defer }) => {
+		defer(() => lifecycle.push('deferred'))
+		return { db: 'node-db' }
+	},
+	context: (_base, { db }) => ({ db }),
+	teardown: ({ db }) => lifecycle.push('teardown ' + db),
+})
+const lifecycleSeed = lifecycleInst.defineSeeder({
+	name: 'lifecycle',
+	run: ({ db }) => {
+		lifecycle.push('seed ' + db)
+		throw new Error('seeder fails')
+	},
+})
+const lifecycleRun = await lifecycleInst.runSeeders([lifecycleSeed], { verbose: false, printResults: false })
+assert.equal(lifecycleRun.success, false)
+assert.deepEqual(lifecycle, ['seed node-db', 'teardown node-db', 'deferred'])
+
 console.log('Verified plantr smoke test on Node.js ' + process.version)
 `,
 		)
@@ -265,6 +286,24 @@ console.log('Verified plantr smoke test on Node.js ' + process.version)
 			stdio: 'inherit',
 			timeout: 30_000,
 		})
+
+		// SIGINT and SIGTERM tear down before exiting, on Node.js and on Bun
+		const signalFixture = join(temporary, 'signal-run.mjs')
+		copyFileSync(join(root, 'src/fixtures/signal-run.mjs'), signalFixture)
+		for (const runtime of [process.execPath, 'bun']) {
+			for (const [signal, exitCode] of [
+				['SIGINT', 130],
+				['SIGTERM', 143],
+			]) {
+				const result = await runUntilSignal(runtime, signalFixture, signal)
+				assert.deepEqual(
+					result,
+					{ exitCode, lines: ['ready', 'teardown connected', 'deferred'] },
+					`${signal} on ${runtime}`,
+				)
+			}
+		}
+		console.log('Verified SIGINT and SIGTERM teardown on Node.js and Bun')
 
 		// Bun import + smoke test (verifies bun:test expect resolution on Bun)
 		execFileSync('bun', ['--input-type=module', '-e', code], {
@@ -470,4 +509,29 @@ void inst.defineSeeder({
 	)
 } finally {
 	rmSync(temporary, { recursive: true, force: true })
+}
+
+/** Run the signal fixture until it prints "ready", send `signal`, and collect what it printed */
+function runUntilSignal(runtime, fixture, signal) {
+	return new Promise((resolvePromise, reject) => {
+		const child = spawn(runtime, [fixture, 'plantr'], { cwd: temporary })
+		let stdout = ''
+		let sent = false
+		const timer = setTimeout(() => {
+			child.kill('SIGKILL')
+			reject(new Error(`${runtime} signal fixture timed out: ${stdout}`))
+		}, 30_000)
+		child.stdout.on('data', (chunk) => {
+			stdout += chunk
+			if (!sent && stdout.includes('ready')) {
+				sent = true
+				child.kill(signal)
+			}
+		})
+		child.on('error', reject)
+		child.on('exit', (code) => {
+			clearTimeout(timer)
+			resolvePromise({ exitCode: code, lines: stdout.trim().split('\n') })
+		})
+	})
 }

@@ -4,7 +4,7 @@ import { type RunSeedersCliOptions, runCli } from './cli.js'
 import { createDefineSeeder } from './define-seeder.js'
 import { type AnyExpectFn, type ExpectFn, getDefaultExpect } from './expect.js'
 import { getDefaultFaker, lazyFaker } from './lazy-faker.js'
-import { runSeedersCore } from './run-seeders.js'
+import { runSeedersCore, type SetupHelpers } from './run-seeders.js'
 import { isSeedingActive } from './seeding-state.js'
 import { createStepRunner, type SeederCache } from './step.js'
 import type {
@@ -44,20 +44,51 @@ export type ResolvedContext<
 export type SeederInstanceConfig<
 	TExtra extends object = Record<never, never>,
 	TExpect extends AnyExpectFn | undefined = ExpectFn,
+	TResources = undefined,
 > = {
+	/**
+	 * Optional: acquire what the run needs (a database connection, an authenticated client)
+	 * and return it. Runs once per run, after the target guard, before the cache and the
+	 * context factory, which both receive the returned resources. Throw to refuse the run.
+	 *
+	 * Register the cleanup for each resource with `defer` right after acquiring it when
+	 * `setup` acquires several: if `setup` throws later, the deferred cleanups still run
+	 * (last registered first), while `teardown` does not, as there are no resources to pass it.
+	 *
+	 * @example
+	 * ```typescript
+	 * setup: async () => {
+	 *   const db = await connect(process.env.DATABASE_URL)
+	 *   return { db }
+	 * },
+	 * teardown: ({ db }) => db.close(),
+	 * ```
+	 */
+	setup?: ((helpers: SetupHelpers) => MaybePromise<TResources>) | undefined
+
+	/**
+	 * Optional: release what `setup` returned. Runs once whenever `setup` returned: after
+	 * the seeders (also when one fails), when the cache or context factory throws, and on
+	 * SIGINT or SIGTERM before the process exits. Deferred cleanups run after it.
+	 */
+	teardown?: ((resources: NoInfer<TResources>) => MaybePromise<void>) | undefined
+
 	/**
 	 * Optional factory function that extends the base context (`faker`, `step`, `expect`).
 	 * Returned properties are merged onto `base` automatically — no need to spread `...base`,
 	 * though spreading or overriding keys (such as `faker`) also works.
-	 * Called once per run, after `onBeforeAll`.
+	 * Called once per run, after `setup`, with the resources it returned.
 	 *
 	 * @example
 	 * ```typescript
-	 * context: () => ({ prisma })
+	 * context: (base, { db }) => ({ db })
 	 * ```
 	 */
 	context?:
-		| ((base: NoInfer<BaseSeederContext<ResolvedExpect<TExpect>>>) => MaybePromise<TExtra>)
+		| ((
+				base: NoInfer<BaseSeederContext<ResolvedExpect<TExpect>>>,
+				resources: NoInfer<TResources>,
+		  ) => MaybePromise<TExtra>)
 		| undefined
 
 	/**
@@ -113,8 +144,10 @@ export type SeederInstanceConfig<
 	fakerSeed?: number | undefined
 
 	/**
-	 * Called before all seeders run, before the context factory.
-	 * Use for setup like connecting to databases, or to refuse a run.
+	 * Called before all seeders run, before `setup` and the context factory.
+	 *
+	 * @deprecated Use `setup`: throw from it to refuse a run, and return what it connects
+	 * so `teardown`, `context` and a `cache` factory receive it. Still called, before `setup`.
 	 *
 	 * @example
 	 * ```typescript
@@ -128,7 +161,9 @@ export type SeederInstanceConfig<
 	/**
 	 * Called after all seeders complete (success or failure), also when the context
 	 * factory throws. Receives the created context (or `undefined` if the context factory threw).
-	 * Use for cleanup like disconnecting from databases.
+	 *
+	 * @deprecated Use `teardown`, which receives the resources `setup` returned even when
+	 * no context exists. Still called, before `teardown`.
 	 *
 	 * @example
 	 * ```typescript
@@ -268,8 +303,9 @@ type FakerSlot = {
 export function createSeederInstance<
 	TExtra extends object = Record<never, never>,
 	TExpect extends AnyExpectFn | undefined = ExpectFn,
+	TResources = undefined,
 >(
-	config?: SeederInstanceConfig<TExtra, TExpect>,
+	config?: SeederInstanceConfig<TExtra, TExpect, TResources>,
 ): SeederInstance<ResolvedContext<TExtra, TExpect>> {
 	type TContext = ResolvedContext<TExtra, TExpect>
 
@@ -342,14 +378,14 @@ export function createSeederInstance<
 		return runSeedersCore(
 			seeders,
 			{
-				context: async () => {
+				context: async (resources) => {
 					const base: BaseSeederContext<ResolvedExpect<TExpect>> = {
 						faker: scopedFaker,
 						step: stepRunner.step,
 						expect: (customExpect ?? getDefaultExpect()) as ResolvedExpect<TExpect>,
 					}
 					if (!config?.context) return base as unknown as TContext
-					const extra = await config.context(base)
+					const extra = await config.context(base, resources)
 					return extra === base
 						? (base as unknown as TContext)
 						: ({ ...base, ...extra } as unknown as TContext)
@@ -375,6 +411,8 @@ export function createSeederInstance<
 				},
 				bannerName,
 				target: config?.target,
+				setup: config?.setup,
+				teardown: config?.teardown,
 				onBeforeAll: config?.onBeforeAll,
 				onAfterAll: config?.onAfterAll,
 			},

@@ -70,6 +70,7 @@ export { lazyFaker as faker } from './src/lazy-faker.js'
 export type {
 	InternalSeederConfig,
 	SeederScopeHandle,
+	SetupHelpers,
 	TargetDescription,
 } from './src/run-seeders.js'
 export { describeTarget, runSeedersCore, SeedTargetError } from './src/run-seeders.js'

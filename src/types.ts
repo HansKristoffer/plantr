@@ -215,6 +215,13 @@ export type RunSeedersOptions<TName extends string = string> = {
 	 * Set to a positive integer (e.g. `4`) or `Infinity` to run independent DAG branches in parallel.
 	 */
 	concurrency?: number | undefined
+	/**
+	 * Handle SIGINT and SIGTERM while the run is active (default: true): start no more
+	 * seeders, flush the cache, run `onAfterAll`, `teardown` and deferred cleanups, then
+	 * exit with 130 (SIGINT) or 143 (SIGTERM). A second signal exits at once. Set to
+	 * `false` when your own signal handlers should stay in charge.
+	 */
+	handleSignals?: boolean | undefined
 }
 
 type OutputsOnSuccess<TSeeders extends readonly SeederAny[], TOptions> = [TOptions] extends [
